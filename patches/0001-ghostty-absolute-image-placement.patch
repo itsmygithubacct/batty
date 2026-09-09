@@ -1,0 +1,168 @@
+--- a/src/terminal/c/kitty_graphics.zig
++++ b/src/terminal/c/kitty_graphics.zig
+@@ -411,6 +411,44 @@
+         .z => out.* = val.z,
+     }
+ 
++    return .success;
++}
++
++/// Move an explicit, pin-backed placement in active-screen coordinates.
++/// This does not execute cursor movement or change any saved cursor state.
++pub fn placement_set_position(
++    terminal_: terminal_c.Terminal,
++    image_id: u32,
++    placement_id: u32,
++    column: u16,
++    row: u16,
++) callconv(lib.calling_conv) Result {
++    if (comptime !build_options.kitty_graphics) return .no_value;
++
++    const wrapper = terminal_ orelse return .invalid_value;
++    const terminal = wrapper.terminal;
++    if (image_id == 0 or placement_id == 0 or
++        column >= terminal.cols or row >= terminal.rows) return .invalid_value;
++
++    const screen = terminal.screens.active;
++    const storage = &screen.kitty_images;
++    const placement = storage.placements.getPtr(.{
++        .image_id = image_id,
++        .placement_id = .{ .tag = .external, .id = placement_id },
++    }) orelse return .no_value;
++    const pin = switch (placement.location) {
++        .pin => |pin| pin,
++        .relative, .virtual => return .invalid_value,
++    };
++    const destination = screen.pages.pin(.{ .active = .{
++        .x = column,
++        .y = row,
++    } }) orelse return .invalid_value;
++
++    // Reuse the existing tracked pin so relocation requires no allocation.
++    pin.* = destination;
++    // This explicit placement mutation must invalidate renderer snapshots.
++    storage.markMutated(wrapper.io.io());
+     return .success;
+ }
+ 
+@@ -2136,3 +2174,62 @@
+     try testing.expectEqual(Result.success, get(graphics, .generation, @ptrCast(&gen)));
+     try testing.expect(gen > gen_alt);
+ }
++
++test "placement_set_position preserves cursor and survives separate-region scroll" {
++    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
++
++    var t: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &t,
++        80,
++        24,
++    ));
++    defer terminal_c.free(t);
++    const setup = "\x1b[2;3H\x1b7\x1b[5;10r\x1b[?6h\x1b[3;80HX" ++
++        "\x1b_Ga=T,t=d,f=24,i=1,p=1,C=1,s=1,v=2;////////\x1b\\";
++    terminal_c.vt_write(t, setup.ptr, setup.len);
++    const terminal = t.?.terminal;
++    const screen = terminal.screens.active;
++    const storage = &screen.kitty_images;
++    const saved = screen.saved_cursor;
++    const tracked_count = screen.pages.countTrackedPins();
++    const generation = storage.generation;
++    try testing.expect(screen.cursor.pending_wrap);
++    try testing.expectEqual(Result.success, placement_set_position(t, 1, 1, 0, 0));
++    try testing.expectEqual(79, screen.cursor.x);
++    try testing.expectEqual(6, screen.cursor.y);
++    try testing.expect(screen.cursor.pending_wrap);
++    try testing.expect(terminal.modes.get(.origin));
++    try testing.expectEqualDeep(saved, screen.saved_cursor);
++    try testing.expectEqual(tracked_count, screen.pages.countTrackedPins());
++    try testing.expect(storage.generation != generation and storage.dirty);
++
++    const placement = storage.placements.get(.{
++        .image_id = 1,
++        .placement_id = .{ .tag = .external, .id = 1 },
++    }).?;
++    try testing.expectEqual(0, placement.location.pin.x);
++    try testing.expectEqual(0, screen.pages.pointFromPin(.active, placement.location.pin.*).?.coord().y);
++    const after_generation = storage.generation;
++    try testing.expectEqual(Result.invalid_value, placement_set_position(null, 1, 1, 0, 0));
++    try testing.expectEqual(Result.invalid_value, placement_set_position(t, 1, 0, 0, 0));
++    try testing.expectEqual(Result.invalid_value, placement_set_position(t, 1, 1, 80, 0));
++    try testing.expectEqual(Result.invalid_value, placement_set_position(t, 1, 1, 0, 24));
++    try testing.expectEqual(Result.no_value, placement_set_position(t, 2, 1, 0, 0));
++    try testing.expectEqual(after_generation, storage.generation);
++
++    const scroll = "\x1b[6;4H\x1bD\x1bD\x1bD\x1bD";
++    terminal_c.vt_write(t, scroll.ptr, scroll.len);
++    try testing.expectEqual(1, storage.placements.count());
++    try testing.expectEqual(0, screen.pages.pointFromPin(.active, placement.location.pin.*).?.coord().y);
++    const restore = "\x1b8";
++    terminal_c.vt_write(t, restore.ptr, restore.len);
++    try testing.expectEqual(2, screen.cursor.x);
++    try testing.expectEqual(1, screen.cursor.y);
++    try testing.expect(!terminal.modes.get(.origin));
++
++    const relative = "\x1b_Ga=p,i=1,p=2,P=1,Q=1,C=1;\x1b\\";
++    terminal_c.vt_write(t, relative.ptr, relative.len);
++    try testing.expectEqual(Result.invalid_value, placement_set_position(t, 1, 2, 0, 0));
++}
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -22,6 +22,7 @@
+ pub const kitty_graphics_placement_next = kitty_graphics.placement_iterator_next;
+ pub const kitty_graphics_placement_get = kitty_graphics.placement_get;
+ pub const kitty_graphics_placement_get_multi = kitty_graphics.placement_get_multi;
++pub const kitty_graphics_placement_set_position = kitty_graphics.placement_set_position;
+ pub const kitty_graphics_placement_rect = kitty_graphics.placement_rect;
+ pub const kitty_graphics_placement_pixel_size = kitty_graphics.placement_pixel_size;
+ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_size;
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -393,6 +393,7 @@
+             @export(&c.kitty_graphics_placement_next, .{ .name = "ghostty_kitty_graphics_placement_next" });
+             @export(&c.kitty_graphics_placement_get, .{ .name = "ghostty_kitty_graphics_placement_get" });
+             @export(&c.kitty_graphics_placement_get_multi, .{ .name = "ghostty_kitty_graphics_placement_get_multi" });
++            @export(&c.kitty_graphics_placement_set_position, .{ .name = "ghostty_kitty_graphics_placement_set_position" });
+             @export(&c.kitty_graphics_placement_rect, .{ .name = "ghostty_kitty_graphics_placement_rect" });
+             @export(&c.kitty_graphics_placement_pixel_size, .{ .name = "ghostty_kitty_graphics_placement_pixel_size" });
+             @export(&c.kitty_graphics_placement_grid_size, .{ .name = "ghostty_kitty_graphics_placement_grid_size" });
+--- a/include/ghostty/vt/kitty_graphics.h
++++ b/include/ghostty/vt/kitty_graphics.h
+@@ -694,6 +694,35 @@
+     size_t* out_written);
+ 
+ /**
++ * Move an existing pin-backed placement to absolute active-screen coordinates.
++ *
++ * Batty extension to the pinned API. Coordinates are zero-indexed and ignore
++ * origin mode and scrolling margins. The text cursor, pending wrap, pen, modes
++ * and saved cursor are unchanged. The existing pin is relocated without an
++ * allocation; subsequent scrolling tracks the destination row normally.
++ *
++ * Only explicit nonzero image/placement IDs are accepted. Internal, virtual
++ * and relative placements cannot be moved through this function. Off-screen
++ * coordinates are rejected rather than clamped. On error nothing changes.
++ * Successful relocation advances the image-storage generation.
++ *
++ * @param terminal Terminal whose active screen owns the placement
++ * @param image_id Nonzero image ID
++ * @param placement_id Nonzero explicit placement ID
++ * @param column Active-screen column, less than terminal columns
++ * @param row Active-screen row, less than terminal rows
++ * @return GHOSTTY_SUCCESS, GHOSTTY_NO_VALUE if no placement exists or graphics
++ *         are disabled, or GHOSTTY_INVALID_VALUE for invalid arguments/types
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_set_position(
++    GhosttyTerminal terminal,
++    uint32_t image_id,
++    uint32_t placement_id,
++    uint16_t column,
++    uint16_t row);
++
++/**
+  * Compute the grid rectangle occupied by the current placement.
+  *
+  * Uses the placement's pin, the image dimensions, and the terminal's

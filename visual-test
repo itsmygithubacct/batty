@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+exec "$root/batty" --gpu-info --cols 100 --rows 34 -- "$root/tools/visual-demo.py" "$@"
