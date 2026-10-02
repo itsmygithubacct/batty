@@ -10,12 +10,14 @@ import urllib.request
 
 root = Path(__file__).resolve().parent.parent
 lock = json.loads((root / 'deps.lock.json').read_text())['zig']
-if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+machine = platform.machine()
+target = machine + '-linux'
+if platform.system() != 'Linux' or target not in lock:
     raise SystemExit('Install Zig ' + lock['version'] + ' and set ZIG to its executable.')
-archive = root / '.cache/zig.tar.xz'
-compiler = root / ('.cache/zig-x86_64-linux-' + lock['version'] + '/zig')
+archive = root / ('.cache/zig-' + target + '.tar.xz')
+compiler = root / ('.cache/zig-' + target + '-' + lock['version'] + '/zig')
 if not compiler.exists():
-    item = lock['x86_64-linux']
+    item = lock[target]
     archive.parent.mkdir(exist_ok=True)
     if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != item['sha256']:
         with urllib.request.urlopen(item['url'], timeout=60) as response, archive.open('wb') as out:

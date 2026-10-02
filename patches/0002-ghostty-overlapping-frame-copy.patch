@@ -1,0 +1,91 @@
+--- a/src/terminal/kitty/graphics_command.zig
++++ b/src/terminal/kitty/graphics_command.zig
+@@ -865,6 +865,9 @@
+ 
+     composition_mode: CompositionMode = .alpha_blend, // C
+ 
++    /// Kilix usage hint bit 1 permits overlapping overwrite copies.
++    overlapping_copy: bool = false, // N
++
+     // Cannot fail: every key is stored as parsed, with no range
+     // validation (Kitty range-checks these while handling the
+     // command; see the comment above the execution-deferral tests).
+@@ -919,6 +922,8 @@
+             // Kitty tests this against zero for compose so any non-zero overwrites
+             result.composition_mode = if (v == 0) .alpha_blend else .overwrite;
+         }
++
++        if (kv.get('N')) |v| result.overlapping_copy = (v & 2) != 0;
+ 
+         return result;
+     }
+--- a/src/terminal/kitty/graphics_exec.zig
++++ b/src/terminal/kitty/graphics_exec.zig
+@@ -893,12 +893,13 @@
+         return result;
+     }
+ 
+-    // Composing a frame onto itself requires non-overlapping
+-    // rectangles.
++    // Standard composition rejects overlap. Kilix explicitly opts into
++    // overwrite-only overlap through usage hint N=2.
++    const overlapping_copy = c.overlapping_copy and c.composition_mode == .overwrite;
+     if (c.source_frame == c.dest_frame) {
+         const x_overlaps = @max(c.left_edge, c.x) < @min(c.left_edge, c.x) + width;
+         const y_overlaps = @max(c.top_edge, c.y) < @min(c.top_edge, c.y) + height;
+-        if (x_overlaps and y_overlaps) {
++        if (x_overlaps and y_overlaps and !overlapping_copy) {
+             result.message = "EINVAL: source and destination rectangles overlap";
+             return result;
+         }
+@@ -915,11 +916,14 @@
+     };
+ 
+     // The frame data is owned by this storage, so the const cast is
+-    // safe. The rectangles were validated disjoint above, so in-place
+-    // composition within one frame is well-defined.
++    // safe. Overlapping copies use direction-aware row moves so each pixel
++    // is read before it is overwritten, without a second canvas allocation.
+     const src = img.frameData(c.source_frame).?;
+     const dst = @constCast(img.frameData(c.dest_frame).?);
+-    pixel.composeCanvasRect(
++    if (c.source_frame == c.dest_frame and overlapping_copy) {
++        pixel.moveCanvasRect(dst, img.width, @intCast(width), @intCast(height),
++            c.left_edge, c.top_edge, c.x, c.y);
++    } else pixel.composeCanvasRect(
+         dst,
+         src,
+         img.width,
+--- a/src/terminal/kitty/graphics_pixel.zig
++++ b/src/terminal/kitty/graphics_pixel.zig
+@@ -115,6 +115,30 @@
+     }
+ }
+ 
++/// Move validated RGBA rectangles within one canvas with memmove semantics.
++/// Row order protects vertical overlap; byte order protects horizontal overlap.
++pub fn moveCanvasRect(
++    canvas: []u8,
++    canvas_width: u32,
++    width: u32,
++    height: u32,
++    src_x: u32,
++    src_y: u32,
++    dst_x: u32,
++    dst_y: u32,
++) void {
++    for (0..height) |index| {
++        const row = if (dst_y > src_y) height - 1 - index else index;
++        const dst_off = ((dst_y + row) * @as(usize, canvas_width) + dst_x) * 4;
++        const src_off = ((src_y + row) * @as(usize, canvas_width) + src_x) * 4;
++        const length = @as(usize, width) * 4;
++        const dst = canvas[dst_off..][0..length];
++        const src = canvas[src_off..][0..length];
++        if (dst_off > src_off) std.mem.copyBackwards(u8, dst, src)
++        else std.mem.copyForwards(u8, dst, src);
++    }
++}
++
+ fn composeRow(dst: []u8, src: []const u8, mode: command.CompositionMode) void {
+     switch (mode) {
+         .overwrite => @memcpy(dst, src),

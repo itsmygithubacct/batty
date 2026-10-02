@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/itsmygithubacct/kitty-frame-presenter.git",
+  "revision": "fa770639eab1f1c1307ecb0a651b8a2a301eec49",
+  "files": {
+    "LICENSE": "14f51f14a84b7b02978cc44bd64ee30649762b9d3b97ed19ca2d17a931d65efe",
+    "src/kitty_frame_presenter/__init__.py": "461c2e73a89325579cce7aa591438ca2ff1eb6bf987a3540176653d12071ec0e",
+    "src/kitty_frame_presenter/presenter.py": "e641fb510e83fe15878f727ab314d0863d420cdb538d76bad4701d4951e12293",
+    "src/kitty_frame_presenter/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

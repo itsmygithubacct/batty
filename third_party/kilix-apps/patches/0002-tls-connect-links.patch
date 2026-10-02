@@ -1,0 +1,19 @@
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -811,12 +811,13 @@
+                 w(f"                view-only password : {view_pw}")
+         if http_port:
+             q = f"?t={token}" if token else ""
++            scheme = "https" if tls_fp else "http"
+             w(f"   browser    : ssh -N -L {http_port}:127.0.0.1:{http_port} {user}@{host}")
+-            w(f"                then open  http://localhost:{http_port}/{q}")
++            w(f"                then open  {scheme}://localhost:{http_port}/{q}")
+             if have_ts:
+-                w(f"   low-latency: http://localhost:{http_port}/watch{q}   (~0.3-1 s)")
++                w(f"   low-latency: {scheme}://localhost:{http_port}/watch{q}   (~0.3-1 s)")
+             if have_hls:
+-                w(f"   view (mpv) : mpv http://localhost:{http_port}/{hls_path}{q}")
++                w(f"   view (mpv) : mpv {scheme}://localhost:{http_port}/{hls_path}{q}")
+         if webrtc_port:
+             w(f"   WebRTC     : ssh -N -L {webrtc_port}:127.0.0.1:{webrtc_port} {user}@{host}")
+             w(f"                then open  http://localhost:{webrtc_port}/kilix"

@@ -1,0 +1,117 @@
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -18,6 +18,7 @@
+ import atexit
+ import fcntl
+ import glob
++import hashlib
+ import json
+ import os
+ import secrets
+@@ -26,7 +27,10 @@
+ import socket
+ import stat
+ import subprocess
++import tarfile
++import tempfile
+ import time
++import urllib.request
+ 
+ 
+ def _runtime_root():
+@@ -618,28 +622,79 @@
+ 
+     # ---- WebRTC (MediaMTX) ---------------------------------------------------
+     MEDIAMTX_VERSION = "v1.9.3"
++    # SHA-256 of the official release archive and its extracted executable.
++    MEDIAMTX_RELEASES = {
++        "x86_64": ("amd64",
++                   "0b885dbfa4ef9c14cd00191c57d90d804255ff50403a28b85ceee7988c535b60",
++                   "b59ecfdaa4ad9aad2281fda1ed46a73eaa0f08fb0d6271a287e87506fd9df2e7"),
++        "aarch64": ("arm64v8",
++                    "f2f02109dd3d88773d7de5ae84385d41041bc9d60d0459eb6c61462cb2da0d1e",
++                    "367c142a06f1ade1014ec26957a73703a71e562302057632a13b6ea1ade02a72"),
++        "armv7l": ("armv7",
++                    "387a84bf47a0c3066d0159f84c8b9ea1da73a0233b4fc67f22731bc8001a6f74",
++                    "045cbbed50dc60c8a3e4888c2ce4dd16687b1450f7921ddfbf6d8dbaf6b1b64d"),
++    }
+ 
+     def ensure_mediamtx(self):
+-        """One-time download of the pinned MediaMTX release into the kilix data
+-        dir (same pattern as noVNC/hls.js vendoring). Returns the binary path."""
++        """Install and verify the pinned MediaMTX release in private storage."""
++        release = self.MEDIAMTX_RELEASES.get(os.uname().machine)
++        if release is None:
++            raise RuntimeError(f"kilix: no MediaMTX build for {os.uname().machine}")
++        arch, archive_hash, executable_hash = release
+         d = os.path.join(_data_home(), "mediamtx")
+         exe = os.path.join(d, "mediamtx")
+-        if os.access(exe, os.X_OK):
++        os.makedirs(d, mode=0o700, exist_ok=True)
++        directory = os.lstat(d)
++        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.geteuid() or directory.st_mode & 0o077:
++            raise RuntimeError("kilix: MediaMTX directory must be private and user-owned")
++        try:
++            installed = os.lstat(exe)
++        except FileNotFoundError:
++            installed = None
++        if installed is not None:
++            if (not stat.S_ISREG(installed.st_mode) or installed.st_uid != os.geteuid()
++                    or installed.st_mode & 0o022 or not os.access(exe, os.X_OK)):
++                raise RuntimeError("kilix: installed MediaMTX executable is unsafe")
++            with open(exe, "rb") as stream:
++                if hashlib.file_digest(stream, "sha256").hexdigest() != executable_hash:
++                    raise RuntimeError("kilix: installed MediaMTX executable differs from pinned release")
+             return exe
+-        arch = {"x86_64": "amd64", "aarch64": "arm64v8",
+-                "armv7l": "armv7"}.get(os.uname().machine)
+-        if not arch:
+-            raise RuntimeError(f"kilix: no MediaMTX build for {os.uname().machine}")
+-        os.makedirs(d, exist_ok=True)
+         url = ("https://github.com/bluenviron/mediamtx/releases/download/"
+-               f"{self.MEDIAMTX_VERSION}/mediamtx_{self.MEDIAMTX_VERSION}"
+-               f"_linux_{arch}.tar.gz")
+-        tgz = os.path.join(d, "mediamtx.tar.gz")
+-        subprocess.run(["curl", "-fsSL", url, "-o", tgz], check=True,
+-                       capture_output=True)
+-        subprocess.run(["tar", "-xzf", tgz, "-C", d, "mediamtx"], check=True,
+-                       capture_output=True)
+-        os.unlink(tgz)
++              f"{self.MEDIAMTX_VERSION}/mediamtx_{self.MEDIAMTX_VERSION}"
++              f"_linux_{arch}.tar.gz")
++        archive_fd, archive_path = tempfile.mkstemp(prefix=".mediamtx-archive-", dir=d)
++        binary_path = None
++        try:
++            archive_digest = hashlib.sha256()
++            size = 0
++            with os.fdopen(archive_fd, "wb") as archive, urllib.request.urlopen(url, timeout=45) as response:
++                while chunk := response.read(1024 * 1024):
++                    size += len(chunk)
++                    if size > 32 * 1024 * 1024:
++                        raise RuntimeError("kilix: MediaMTX archive exceeds 32 MiB")
++                    archive_digest.update(chunk)
++                    archive.write(chunk)
++            if archive_digest.hexdigest() != archive_hash:
++                raise RuntimeError("kilix: MediaMTX archive differs from pinned release")
++            with tarfile.open(archive_path, "r:gz") as bundle:
++                member = bundle.getmember("mediamtx")
++                if not member.isfile() or member.size > 80 * 1024 * 1024:
++                    raise RuntimeError("kilix: invalid MediaMTX executable in archive")
++                binary_fd, binary_path = tempfile.mkstemp(prefix=".mediamtx-binary-", dir=d)
++                binary_digest = hashlib.sha256()
++                with os.fdopen(binary_fd, "wb") as output, bundle.extractfile(member) as source:
++                    while chunk := source.read(1024 * 1024):
++                        binary_digest.update(chunk)
++                        output.write(chunk)
++                    os.fchmod(output.fileno(), 0o700)
++                if binary_digest.hexdigest() != executable_hash:
++                    raise RuntimeError("kilix: MediaMTX executable differs from pinned release")
++            os.replace(binary_path, exe)
++            binary_path = None
++        finally:
++            os.unlink(archive_path)
++            if binary_path is not None:
++                os.unlink(binary_path)
+         return exe
+ 
+     def start_mediamtx(self, *, rtsp_port, webrtc_port, token, lan=False,

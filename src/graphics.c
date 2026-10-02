@@ -65,7 +65,17 @@ BtGraphics *bt_graphics_new(GhosttyTerminal terminal) {
     g->cols=80; g->rows=24; g->cw=8; g->ch=16;
     g->next_sixel_id=UINT32_MAX;
     uint64_t limit=IMAGE_BYTES;
+    bool shared_memory=true;
+    const char *local_files=getenv("BATTY_KITTY_LOCAL_FILES");
+    bool file_medium=local_files && !strcmp(local_files,"1");
+    const char *temp_dir=getenv("TMPDIR");
+    if(!temp_dir || !*temp_dir) temp_dir="/tmp";
+    GhosttyString temporary={(const uint8_t *)temp_dir,strlen(temp_dir)};
     if(ghostty_terminal_set(terminal,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,&limit)!=GHOSTTY_SUCCESS ||
+       ghostty_terminal_set(terminal,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,&shared_memory)!=GHOSTTY_SUCCESS ||
+       (file_medium &&
+        (ghostty_terminal_set(terminal,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,&file_medium)!=GHOSTTY_SUCCESS ||
+         ghostty_terminal_set(terminal,GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,&temporary)!=GHOSTTY_SUCCESS)) ||
        ghostty_terminal_set(terminal,GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,(const void *)attributes)!=GHOSTTY_SUCCESS ||
        (!users && ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG,(const void *)decode_png)!=GHOSTTY_SUCCESS)) {
         free(g); return NULL;

@@ -14,13 +14,17 @@
 typedef struct {
     GLuint texture;
     uint64_t generation, used;
-    size_t bytes;
+    size_t bytes, length;
+    uint32_t id, width, height;
+    unsigned channels;
+    uint8_t *shadow;
 } Texture;
 struct BtImageRenderer {
     GLuint program, vao, vbo;
     GLint viewport, source_bounds, max_texture;
     Texture textures[TEXTURES];
     size_t bytes;
+    BtImageStats stats;
     uint64_t epoch, clock;
     const BtPresentation *frame;
     unsigned cw, ch;
@@ -72,7 +76,8 @@ failed:
 static void evict(BtImageRenderer *r, unsigned i) {
     Texture *t=&r->textures[i];
     if(t->texture) glDeleteTextures(1,&t->texture);
-    r->bytes-=t->bytes; memset(t,0,sizeof(*t));
+    r->bytes-=t->bytes; r->stats.shadow_bytes-=t->length;
+    free(t->shadow); memset(t,0,sizeof(*t));
 }
 void bt_images_reset(BtImageRenderer *r) {
     if(!r) return;
@@ -94,10 +99,61 @@ static unsigned oldest(BtImageRenderer *r) {
     }
     return slot;
 }
+BtImageStats bt_images_stats(const BtImageRenderer *r) {
+    BtImageStats stats=r->stats; stats.texture_bytes=r->bytes; return stats;
+}
+/* Keep straight-alpha shadows; compare before premultiplication so alpha-only
+ * edits and grayscale images follow the same damage calculation. */
+static uint8_t *stage(const uint8_t *pixels, unsigned width, unsigned channels,
+                      unsigned x, unsigned y, unsigned w, unsigned h) {
+    size_t stride=(size_t)w*channels;
+    uint8_t *data=malloc(stride*h);
+    if(!data) return NULL;
+    for(unsigned row=0;row<h;++row) {
+        uint8_t *out=data+row*stride;
+        memcpy(out,pixels+((size_t)(y+row)*width+x)*channels,stride);
+        if(channels==2 || channels==4) for(size_t i=0;i<stride;i+=channels) {
+            unsigned alpha=out[i+channels-1];
+            for(unsigned c=0;c+1<channels;++c) out[i+c]=(uint8_t)((out[i+c]*alpha+127)/255);
+        }
+    }
+    return data;
+}
+static GLuint update(BtImageRenderer *r, Texture *t, const BtPresentationImage *im, GLenum format) {
+    unsigned x0=im->width,y0=im->height,x1=0,y1=0,c=im->channels;
+    size_t stride=(size_t)im->width*c;
+    for(unsigned y=0;y<im->height;++y) {
+        size_t row=(size_t)y*stride;
+        if(!memcmp(t->shadow+row,im->pixels+row,stride)) continue;
+        if(y<y0) y0=y;
+        y1=y+1;
+        for(unsigned x=0;x<im->width;++x) if(memcmp(t->shadow+row+(size_t)x*c,im->pixels+row+(size_t)x*c,c)) {
+            if(x<x0) x0=x;
+            if(x+1>x1) x1=x+1;
+        }
+    }
+    if(y1) {
+        unsigned w=x1-x0,h=y1-y0;
+        uint8_t *data=stage(im->pixels,im->width,c,x0,y0,w,h);
+        if(!data) { fail(r,"Could not stage image damage"); return 0; }
+        glBindTexture(GL_TEXTURE_2D,t->texture);
+        glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+        glTexSubImage2D(GL_TEXTURE_2D,0,x0,y0,w,h,format,GL_UNSIGNED_BYTE,data);
+        free(data);
+        if(glGetError()!=GL_NO_ERROR) { fail(r,"Could not upload image damage"); return 0; }
+        for(unsigned y=y0;y<y1;++y) {
+            size_t offset=(size_t)y*stride+(size_t)x0*c;
+            memcpy(t->shadow+offset,im->pixels+offset,(size_t)w*c);
+        }
+        ++r->stats.region_uploads; r->stats.uploaded_bytes+=(uint64_t)w*h*c;
+    } else ++r->stats.unchanged_updates;
+    t->generation=im->generation; t->used=++r->clock;
+    return t->texture;
+}
 static GLuint texture(BtImageRenderer *r, const BtPresentationImage *image, uint32_t *width, uint32_t *height) {
     uint64_t stamp=image->generation;
     *width=image->width; *height=image->height;
-    for(unsigned i=0;i<TEXTURES;++i) if(r->textures[i].texture && r->textures[i].generation==stamp) {
+    for(unsigned i=0;i<TEXTURES;++i) if(r->textures[i].texture && r->textures[i].generation==stamp && r->textures[i].id==image->id) {
         r->textures[i].used=++r->clock; return r->textures[i].texture;
     }
     uint64_t bytes=(uint64_t)*width * *height * 4;
@@ -112,6 +168,14 @@ static GLuint texture(BtImageRenderer *r, const BtPresentationImage *image, uint
         default: return 0;
     }
     if((uint64_t)*width * *height * channels!=length) return 0;
+    for(unsigned i=0;i<TEXTURES;++i) {
+        Texture *t=&r->textures[i];
+        if(!t->texture || t->id!=image->id) continue;
+        if(t->width==*width && t->height==*height && t->channels==channels)
+            return update(r,t,image,external);
+        evict(r,i);
+        break;
+    }
     while(r->bytes+bytes>GPU_BYTES) {
         unsigned slot=0;
         for(unsigned i=1;i<TEXTURES;++i)
@@ -130,23 +194,27 @@ static GLuint texture(BtImageRenderer *r, const BtPresentationImage *image, uint
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_SWIZZLE_B,GL_RED);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_SWIZZLE_A,channels==2?GL_GREEN:GL_ONE);
     }
-    uint8_t *premultiplied=NULL;
-    if(channels==4 || channels==2) {
-        premultiplied=malloc(length);
-        if(!premultiplied) { glDeleteTextures(1,&t->texture); memset(t,0,sizeof(*t)); fail(r,"Could not stage image pixels"); return 0; }
-        for(size_t i=0;i<length;i+=channels) {
-            unsigned alpha=pixels[i+channels-1];
-            for(unsigned j=0;j+1<channels;++j) premultiplied[i+j]=(uint8_t)((pixels[i+j]*alpha+127)/255);
-            premultiplied[i+channels-1]=(uint8_t)alpha;
-        }
+    uint8_t *data=stage(pixels,*width,channels,0,0,*width,*height);
+    uint8_t *shadow=malloc(length);
+    if(!data || !shadow) {
+        free(data); free(shadow); evict(r,slot);
+        fail(r,"Could not stage image pixels"); return 0;
     }
+    memcpy(shadow,pixels,length);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
-    glTexImage2D(GL_TEXTURE_2D,0,(GLint)internal,*width,*height,0,external,GL_UNSIGNED_BYTE,premultiplied?premultiplied:pixels);
-    free(premultiplied);
+    glTexImage2D(GL_TEXTURE_2D,0,(GLint)internal,*width,*height,0,external,GL_UNSIGNED_BYTE,data);
+    free(data);
+    if(glGetError()!=GL_NO_ERROR) {
+        free(shadow); evict(r,slot); fail(r,"Could not upload image pixels"); return 0;
+    }
+    t->shadow=shadow; t->length=length; t->id=image->id;
+    t->width=*width; t->height=*height; t->channels=channels;
     t->generation=stamp; t->used=++r->clock; t->bytes=(size_t)bytes; r->bytes+=t->bytes;
+    ++r->stats.full_uploads; r->stats.uploaded_bytes+=length; r->stats.shadow_bytes+=length;
     return t->texture;
 }
-int bt_images_draw(BtImageRenderer *r, int layer, int width, int height, unsigned cols, unsigned rows) {
+int bt_images_draw(BtImageRenderer *r, int layer, int width, int height, unsigned cols, unsigned rows,
+                  int origin_x, int origin_y, int viewport_width, int viewport_height) {
     if(!r->frame) return 0;
     glUseProgram(r->program); glUniform2f(r->viewport,width,height);
     glBindVertexArray(r->vao); glBindBuffer(GL_ARRAY_BUFFER,r->vbo);
@@ -155,7 +223,15 @@ int bt_images_draw(BtImageRenderer *r, int layer, int width, int height, unsigne
     if(grid_width>width-PAD) grid_width=width-PAD;
     if(grid_height>height-PAD) grid_height=height-PAD;
     if(grid_width<=0 || grid_height<=0) return 0;
-    glEnable(GL_SCISSOR_TEST); glScissor(PAD,height-PAD-grid_height,grid_width,grid_height);
+    glEnable(GL_SCISSOR_TEST);
+    int clip_x=origin_x+(int)((int64_t)PAD*viewport_width/width);
+    int clip_y=origin_y+(int)((int64_t)(height-PAD-grid_height)*viewport_height/height);
+    int clip_right=origin_x+(int)(((int64_t)(PAD+grid_width)*viewport_width+width-1)/width);
+    int clip_top=origin_y+(int)(((int64_t)(height-PAD)*viewport_height+height-1)/height);
+    if(clip_right>origin_x+viewport_width) clip_right=origin_x+viewport_width;
+    if(clip_top>origin_y+viewport_height) clip_top=origin_y+viewport_height;
+    if(clip_right<=clip_x || clip_top<=clip_y) return 0;
+    glScissor(clip_x,clip_y,clip_right-clip_x,clip_top-clip_y);
     for(size_t i=0;i<r->frame->placement_count;++i) {
         const BtPresentationPlacement *p=&r->frame->placements[i];
         int actual=p->z<INT32_MIN/2?0:p->z<0?1:2;
@@ -177,7 +253,7 @@ int bt_images_draw(BtImageRenderer *r, int layer, int width, int height, unsigne
         glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STREAM_DRAW);
         glDrawArrays(GL_TRIANGLES,0,6);
     }
-    glDisable(GL_SCISSOR_TEST);
+    glScissor(origin_x,origin_y,viewport_width,viewport_height);
     if(glGetError()!=GL_NO_ERROR) return fail(r,"OpenGL image rendering failed");
     return r->error[0]?-1:0;
 }

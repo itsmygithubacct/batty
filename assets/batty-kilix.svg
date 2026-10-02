@@ -1,0 +1,8 @@
+<!-- SPDX-License-Identifier: MIT -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="8" y="12" width="112" height="104" rx="16" fill="#13171e"/>
+  <path d="M8 40h112" stroke="#509bff" stroke-width="4"/>
+  <circle cx="24" cy="26" r="4" fill="#509bff"/>
+  <path d="M22 59l22 17-22 17m33 0h23" fill="none" stroke="#fff" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M91 55v47m-4-26h23" stroke="#509bff" stroke-width="3"/>
+</svg>

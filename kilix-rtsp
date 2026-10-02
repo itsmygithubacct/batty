@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -eu
+root=$(dirname -- "$(readlink -f -- "$0")")
+exec "$root/kilix" rtsp "$@"

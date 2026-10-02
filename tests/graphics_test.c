@@ -3,6 +3,9 @@
 #define _GNU_SOURCE
 #include "window.h"
 #include <limits.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <png.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -701,16 +704,352 @@ static void test_sixel_page_mode(void) {
     puts("PASS graphics page-mode Sixel origin, margins, cursor, pending wrap and saved cursor");
 }
 
+static void shared_command(const char *header, const uint8_t *data, size_t length) {
+    static unsigned serial;
+    char name[96]; snprintf(name,sizeof(name),"/batty-graphics-%ld-%u",(long)getpid(),++serial);
+    int fd=shm_open(name,O_CREAT|O_EXCL|O_RDWR,0600);
+    require(fd>=0,"create shared graphics object");
+    bool written=ftruncate(fd,(off_t)length)==0 && write(fd,data,length)==(ssize_t)length;
+    close(fd);
+    if(!written) shm_unlink(name);
+    require(written,"populate shared graphics object");
+    image_command(header,(const uint8_t *)name,strlen(name),1);
+    errno=0;
+    fd=shm_open(name,O_RDONLY,0);
+    bool consumed=fd<0 && errno==ENOENT;
+    if(fd>=0) close(fd);
+    shm_unlink(name);
+    require(consumed,"decoder unlinks shared payload after consuming it");
+}
+static void test_shared_frames(void) {
+    blank(); at(2,2);
+    uint8_t red[8*8*3];
+    for(size_t i=0;i<sizeof(red);i+=3) { red[i]=230; red[i+1]=20; red[i+2]=30; }
+    shared_command("a=T,i=801,p=1,t=s,f=24,N=1,s=8,v=8,q=2,C=1",red,sizeof(red));
+    require(image_exists(801),"shared full frame is stored");
+    capture(); pixel(px(2)+3,py(2)+3,230,20,30,1,"shared full frame renders");
+    BtImageStats before=bt_renderer_image_stats(window.renderer);
+    uint8_t green[12]={0,220,0,0,220,0,0,220,0,0,220,0};
+    shared_command("a=f,i=801,r=1,x=2,y=2,t=s,f=24,N=1,s=2,v=2,q=2",green,sizeof(green));
+    capture(); pixel(px(2)+2,py(2)+2,0,220,0,1,"shared root-frame edit renders");
+    pixel(px(2),py(2),230,20,30,1,"frame edit preserves untouched pixels");
+    BtImageStats after=bt_renderer_image_stats(window.renderer);
+    /* Ghostty promotes the RGB root to RGBA for its first frame edit. */
+    require(after.full_uploads==before.full_uploads+1 && after.uploaded_bytes==before.uploaded_bytes+256,
+            "first RGB frame edit uploads the decoder's promoted RGBA image");
+    require(after.texture_bytes==before.texture_bytes && after.shadow_bytes==before.shadow_bytes+64,
+            "format promotion replaces the old texture and shadow");
+    before=after;
+    uint8_t blue[12]={0,0,240,0,0,240,0,0,240,0,0,240};
+    image_command("a=f,i=801,r=1,x=5,y=5,t=d,f=24,N=1,s=2,v=2,q=2",blue,sizeof(blue),1);
+    capture(); pixel(px(2)+5,py(2)+5,0,0,240,1,"inline root-frame edit renders");
+    pixel(px(2)+2,py(2)+2,0,220,0,1,"successive edits preserve previous damage");
+    after=bt_renderer_image_stats(window.renderer);
+    require(after.full_uploads==before.full_uploads && after.region_uploads==before.region_uploads+1 &&
+            after.uploaded_bytes==before.uploaded_bytes+16,"2x2 edit uploads sixteen RGBA bytes without reallocating texture");
+    require(after.texture_bytes==before.texture_bytes && after.shadow_bytes==before.shadow_bytes,
+            "successive image generations retain bounded cache storage");
+    before=bt_renderer_image_stats(window.renderer);
+    image_command("a=f,i=801,r=1,x=5,y=5,t=d,f=24,N=1,s=2,v=2,q=2",blue,sizeof(blue),1);
+    capture();
+    after=bt_renderer_image_stats(window.renderer);
+    require(after.uploaded_bytes==before.uploaded_bytes && after.unchanged_updates==before.unchanged_updates+1,
+            "identical image edit advances generation without GPU upload");
+    shared_command("a=T,i=802,t=s,f=24,s=8,v=8,q=2",red,3);
+    require(!image_exists(802),"undersized shared object cannot create an image");
+    const char invalid[]="/invalid/path";
+    image_command("a=T,i=803,t=s,f=24,s=8,v=8,q=2",(const uint8_t *)invalid,strlen(invalid),1);
+    require(!image_exists(803),"shared-memory names cannot traverse directories");
+    const char missing[]="/batty-graphics-missing-object";
+    image_command("a=T,i=804,t=s,f=24,s=8,v=8,q=2",(const uint8_t *)missing,strlen(missing),1);
+    require(!image_exists(804),"missing shared object cannot create an image");
+    capture(); pixel(px(2)+5,py(2)+5,0,0,240,1,"failed transfers preserve previous frame");
+    puts("PASS graphics shared-memory full frames, unlink acknowledgements, root edits, inline edits and invalid payloads");
+}
+
+static void test_file_frames(void) {
+    blank(); at(2,2);
+    const char *directory=getenv("TMPDIR");
+    if(!directory || !*directory) directory="/tmp";
+    char temporary[PATH_MAX],direct[PATH_MAX],wrong_name[PATH_MAX];
+    int path_length=snprintf(temporary,sizeof(temporary),"%s/tty-graphics-protocol-XXXXXX",directory);
+    require(path_length>0 && (size_t)path_length<sizeof(temporary),"temporary image path fits");
+    int fd=mkstemp(temporary);
+    require(fd>=0,"create private temporary image file");
+    uint8_t red[8*8*3];
+    for(size_t i=0;i<sizeof(red);i+=3) { red[i]=230; red[i+1]=20; red[i+2]=30; }
+    require(write(fd,red,sizeof(red))==(ssize_t)sizeof(red) && !close(fd),"write temporary image pixels");
+    image_command("a=T,i=901,t=t,f=24,s=8,v=8,q=2",(const uint8_t *)temporary,strlen(temporary),0);
+    require(image_exists(901) && access(temporary,F_OK)<0 && errno==ENOENT,
+            "temporary-file image loads and unlinks its one-shot source");
+    capture(); pixel(px(2)+3,py(2)+3,230,20,30,1,"temporary-file image reaches framebuffer");
+
+    path_length=snprintf(temporary,sizeof(temporary),"%s/tty-graphics-protocol-XXXXXX",directory);
+    require(path_length>0 && (size_t)path_length<sizeof(temporary),"temporary edit path fits");
+    fd=mkstemp(temporary); require(fd>=0,"create private temporary frame edit");
+    uint8_t blue[2*2*3];
+    for(size_t i=0;i<sizeof(blue);i+=3) { blue[i]=0; blue[i+1]=0; blue[i+2]=240; }
+    require(write(fd,blue,sizeof(blue))==(ssize_t)sizeof(blue) && !close(fd),"write temporary edit pixels");
+    image_command("a=f,i=901,r=1,x=2,y=2,t=t,f=24,N=1,s=2,v=2,q=2",
+                  (const uint8_t *)temporary,strlen(temporary),1);
+    require(access(temporary,F_OK)<0 && errno==ENOENT,"temporary frame edit unlinks its source");
+    capture();
+    pixel(px(2)+2,py(2)+2,0,0,240,1,"SDK-style temporary frame edit reaches framebuffer");
+    pixel(px(2)+4,py(2)+4,230,20,30,1,"temporary frame edit retains unchanged image pixels");
+
+    path_length=snprintf(direct,sizeof(direct),"%s/batty-graphics-file-XXXXXX",directory);
+    require(path_length>0 && (size_t)path_length<sizeof(direct),"direct image path fits");
+    fd=mkstemp(direct); require(fd>=0,"create direct image file");
+    uint8_t green[8*8*3];
+    for(size_t i=0;i<sizeof(green);i+=3) { green[i]=0; green[i+1]=220; green[i+2]=60; }
+    require(write(fd,green,sizeof(green))==(ssize_t)sizeof(green) && !close(fd),"write direct image pixels");
+    at(4,2);
+    image_command("a=T,i=902,t=f,f=24,s=8,v=8,q=2",(const uint8_t *)direct,strlen(direct),0);
+    require(image_exists(902) && access(direct,F_OK)==0,"direct-file image keeps its source");
+    capture(); pixel(px(4)+3,py(2)+3,0,220,60,1,"direct-file image reaches framebuffer");
+    require(!unlink(direct),"remove direct-file fixture");
+
+    path_length=snprintf(wrong_name,sizeof(wrong_name),"%s/batty-graphics-unsafe-XXXXXX",directory);
+    require(path_length>0 && (size_t)path_length<sizeof(wrong_name),"invalid temporary path fits");
+    fd=mkstemp(wrong_name); require(fd>=0,"create invalid temporary fixture");
+    require(write(fd,red,sizeof(red))==(ssize_t)sizeof(red) && !close(fd),"write invalid temporary fixture");
+    image_command("a=T,i=903,t=t,f=24,s=8,v=8,q=2",(const uint8_t *)wrong_name,strlen(wrong_name),0);
+    require(!image_exists(903) && access(wrong_name,F_OK)==0,
+            "temporary medium rejects and preserves an unmarked file");
+    require(!unlink(wrong_name),"remove invalid temporary fixture");
+    const char proc[]="/proc/version";
+    image_command("a=T,i=904,t=f,f=24,s=8,v=8,q=2",(const uint8_t *)proc,strlen(proc),0);
+    require(!image_exists(904),"direct file medium rejects protected procfs path");
+    puts("PASS graphics local file, temporary-file frame edits, cleanup, path rejection and framebuffer");
+}
+
+static void test_animation_playback(void) {
+    blank(); at(2,2);
+    uint8_t red[8*8*3], blue[8*8*3];
+    for(size_t i=0;i<sizeof(red);i+=3) {
+        red[i]=230; red[i+1]=20; red[i+2]=30;
+        blue[i]=0; blue[i+1]=0; blue[i+2]=240;
+    }
+    image_command("a=T,i=811,p=1,f=24,s=8,v=8,q=2",red,sizeof(red),0);
+    image_command("a=f,i=811,f=24,s=8,v=8,z=80,q=2",blue,sizeof(blue),0);
+    text("\033_Ga=a,i=811,r=1,z=80,s=3,v=3\033\\");
+    capture(); pixel(px(2)+3,py(2)+3,230,20,30,1,"animation starts on root frame");
+    uint64_t revision=window.session.graphics_revision;
+    uint64_t deadline=bt_millis()+1000;
+    while(window.session.graphics_revision==revision && bt_millis()<deadline)
+        require(!bt_session_pump(&window.session,10),"tick running animation without PTY output");
+    require(window.session.graphics_revision>revision,"idle pump advances animation frame");
+    capture(); pixel(px(2)+3,py(2)+3,0,0,240,1,"automatic second frame reaches framebuffer");
+    revision=window.session.graphics_revision;
+    while(window.session.graphics_revision==revision && bt_millis()<deadline)
+        require(!bt_session_pump(&window.session,10),"tick animation through loop boundary");
+    require(window.session.graphics_revision>revision,"animation returns to root frame");
+    capture(); pixel(px(2)+3,py(2)+3,230,20,30,1,"looped root frame reaches framebuffer");
+    puts("PASS graphics automatic Kitty animation playback without PTY output");
+}
+
+static void test_unicode_placeholders(void) {
+    blank(); at(2,2);
+    uint8_t pixels[16*8*3];
+    for(unsigned y=0;y<8;++y) for(unsigned x=0;x<16;++x) {
+        size_t i=(y*16+x)*3;
+        pixels[i]=x<8?230:0;
+        pixels[i+1]=x<8?20:0;
+        pixels[i+2]=x<8?30:240;
+    }
+    image_command("a=T,i=1,U=1,f=24,s=16,v=8,c=2,r=1,q=2",pixels,sizeof(pixels),0);
+    text("\033[38;5;1m"
+         "\xf4\x8e\xbb\xae\xcc\x85\xcc\x85"
+         "\xf4\x8e\xbb\xae\xcc\x85\xcc\x8d"
+         "\033[39m");
+    GhosttyKittyGraphicsVirtualPlacementIterator iter=NULL;
+    checked(ghostty_kitty_graphics_virtual_placement_iterator_new(window.session.terminal,NULL,
+            cell_width,cell_height,&iter),"open Unicode placeholder iterator");
+    GhosttyKittyGraphicsVirtualPlacementInfo info={
+        .size=sizeof(info),.geometry=GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo)};
+    require(ghostty_kitty_graphics_virtual_placement_next(iter,&info) && info.image_id==1 &&
+            info.geometry.viewport_col==2 && info.geometry.viewport_row==2 &&
+            info.geometry.source_x==0 && info.geometry.source_width==16,
+            "adjacent placeholders combine into one image run");
+    require(!ghostty_kitty_graphics_virtual_placement_next(iter,&info),"combined placeholder iterator ends");
+    ghostty_kitty_graphics_virtual_placement_iterator_free(iter);
+    capture();
+    pixel(px(2)+cell_width/2,py(2)+cell_height/2,230,20,30,1,
+          "first Unicode placeholder renders left image fragment");
+    pixel(px(3)+cell_width/2,py(2)+cell_height/2,0,0,240,1,
+          "second Unicode placeholder renders right image fragment");
+    at(2,2); text(" ");
+    checked(ghostty_kitty_graphics_virtual_placement_iterator_new(window.session.terminal,NULL,
+            cell_width,cell_height,&iter),"reopen placeholder iterator after text overwrite");
+    require(ghostty_kitty_graphics_virtual_placement_next(iter,&info) &&
+            info.geometry.viewport_col==3 && info.geometry.source_x>=8,
+            "remaining placeholder follows cell content and crops source");
+    require(!ghostty_kitty_graphics_virtual_placement_next(iter,&info),"overwritten placeholder disappears");
+    ghostty_kitty_graphics_virtual_placement_iterator_free(iter);
+    capture();
+    pixel(px(2)+cell_width/2,py(2)+cell_height/2,
+          background[0],background[1],background[2],1,"overwritten placeholder clears stale fragment");
+    pixel(px(3)+cell_width/2,py(2)+cell_height/2,0,0,240,1,
+          "neighboring placeholder remains after overwrite");
+    at(0,window.session.rows-1); text("\n");
+    checked(ghostty_kitty_graphics_virtual_placement_iterator_new(window.session.terminal,NULL,
+            cell_width,cell_height,&iter),"reopen placeholder iterator after scroll");
+    bool found=ghostty_kitty_graphics_virtual_placement_next(iter,&info);
+    if(!found || info.geometry.viewport_col!=3 || info.geometry.viewport_row!=1)
+        fprintf(stderr,"placeholder scroll: found=%d viewport=%d,%d rows=%u\n",
+                found,info.geometry.viewport_col,info.geometry.viewport_row,window.session.rows);
+    require(found && info.geometry.viewport_col==3 && info.geometry.viewport_row==1,
+            "placeholder fragment follows viewport scroll");
+    ghostty_kitty_graphics_virtual_placement_iterator_free(iter);
+    capture();
+    pixel(px(3)+cell_width/2,py(1)+cell_height/2,0,0,240,1,
+          "scrolled placeholder fragment reaches framebuffer");
+    puts("PASS graphics Unicode placeholder fragments, overwrite, scroll and native framebuffer");
+}
+
+static void test_virtual_relative_placements(void) {
+    blank(); at(2,2);
+    solid(1,16,8,24,230,20,30,255,",U=1,p=7,c=2,r=1");
+    solid(2,8,8,24,0,220,60,255,",p=8,P=1,Q=7,H=3,V=1,c=1,r=1,z=2");
+    solid(3,8,8,24,230,210,20,255,",p=9,P=2,Q=8,H=-1,V=1,c=1,r=1,z=3");
+    capture();
+    background_pixel(px(5)+cell_width/2,py(3)+cell_height/2,
+                     "relative child stays hidden without placeholder cells");
+    at(2,2);
+    text("\033[38;5;1m"
+         "\xf4\x8e\xbb\xae\xcc\x85\xcc\x85"
+         "\xf4\x8e\xbb\xae\xcc\x85\xcc\x8d"
+         "\033[39m");
+    GhosttyKittyGraphicsVirtualPlacementIterator iter=NULL;
+    checked(ghostty_kitty_graphics_virtual_placement_iterator_new(window.session.terminal,NULL,
+            cell_width,cell_height,&iter),"open virtual relative iterator");
+    GhosttyKittyGraphicsVirtualPlacementInfo info={
+        .size=sizeof(info),.geometry=GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo)};
+    bool child=false,grandchild=false;
+    while(ghostty_kitty_graphics_virtual_placement_next(iter,&info)) {
+        if(info.image_id==2) {
+            require(info.z==2 && info.geometry.viewport_col==5 && info.geometry.viewport_row==3,
+                    "child follows minimum placeholder origin");
+            child=true;
+        }
+        if(info.image_id==3) {
+            require(info.z==3 && info.geometry.viewport_col==4 && info.geometry.viewport_row==4,
+                    "grandchild resolves signed chain from virtual root");
+            grandchild=true;
+        }
+    }
+    ghostty_kitty_graphics_virtual_placement_iterator_free(iter);
+    require(child && grandchild,"virtual iterator emits both relative descendants");
+    capture();
+    pixel(px(5)+cell_width/2,py(3)+cell_height/2,0,220,60,1,
+          "relative child reaches framebuffer");
+    pixel(px(4)+cell_width/2,py(4)+cell_height/2,230,210,20,1,
+          "relative grandchild reaches framebuffer");
+    at(2,2); text(" "); capture();
+    background_pixel(px(5)+cell_width/2,py(3)+cell_height/2,
+                     "old relative child location clears after placeholder overwrite");
+    pixel(px(6)+cell_width/2,py(3)+cell_height/2,0,220,60,1,
+          "relative child follows surviving placeholder");
+    pixel(px(5)+cell_width/2,py(4)+cell_height/2,230,210,20,1,
+          "relative grandchild follows surviving placeholder");
+    at(0,window.session.rows-1); text("\n"); capture();
+    pixel(px(6)+cell_width/2,py(2)+cell_height/2,0,220,60,1,
+          "relative child follows placeholder through scroll");
+    at(3,1); text(" "); capture();
+    background_pixel(px(6)+cell_width/2,py(2)+cell_height/2,
+                     "relative child disappears with final placeholder");
+    background_pixel(px(5)+cell_width/2,py(3)+cell_height/2,
+                     "relative grandchild disappears with final placeholder");
+    puts("PASS graphics virtual-root children and grandchildren follow overwrite and scroll");
+}
+
+static void test_damage_alpha_and_replacement(void) {
+    blank(); at(2,2);
+    solid(821,8,8,32,0,0,255,128,""); capture();
+    BtImageStats before=bt_renderer_image_stats(window.renderer);
+    uint8_t opaque[4]={0,0,255,255};
+    image_command("a=f,i=821,r=1,x=3,y=3,t=d,f=32,N=1,s=1,v=1,q=2",opaque,sizeof(opaque),1);
+    capture();
+    pixel(px(2)+3,py(2)+3,0,0,255,1,"alpha-only damage replaces premultiplied texel");
+    pixel(px(2)+2,py(2)+2,9,11,143,2,"alpha edit preserves neighboring blended texels");
+    BtImageStats after=bt_renderer_image_stats(window.renderer);
+    require(after.full_uploads==before.full_uploads && after.region_uploads==before.region_uploads+1 &&
+            after.uploaded_bytes==before.uploaded_bytes+4,"alpha edit uploads one RGBA texel");
+    before=after;
+    at(2,2); solid(821,8,8,24,230,20,30,255,""); capture();
+    pixel(px(2)+3,py(2)+3,230,20,30,1,"same-ID format replacement renders opaque RGB");
+    after=bt_renderer_image_stats(window.renderer);
+    require(after.full_uploads==before.full_uploads+1 && after.uploaded_bytes==before.uploaded_bytes+192,
+            "format replacement performs a complete upload");
+    require(after.texture_bytes==before.texture_bytes && after.shadow_bytes+64==before.shadow_bytes,
+            "format replacement releases previous shadow and texture accounting");
+    before=after;
+    at(2,2); solid(821,4,4,24,0,220,0,255,""); capture();
+    pixel(px(2)+2,py(2)+2,0,220,0,1,"same-ID dimension replacement renders");
+    after=bt_renderer_image_stats(window.renderer);
+    require(after.full_uploads==before.full_uploads+1 && after.uploaded_bytes==before.uploaded_bytes+48,
+            "dimension replacement performs a complete upload");
+    require(after.texture_bytes+192==before.texture_bytes && after.shadow_bytes+144==before.shadow_bytes,
+            "dimension replacement releases old cache storage");
+    puts("PASS graphics incremental alpha, format and dimension replacement");
+}
+
+static void test_overlapping_copy(void) {
+    uint8_t original[8*8*3];
+    for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x) {
+        size_t i=(y*8+x)*3;
+        original[i]=x*30; original[i+1]=y*30; original[i+2]=40;
+    }
+    const unsigned offsets[][4]={{0,0,1,1},{1,1,0,0},{0,0,1,0},{1,0,0,0},{0,0,0,1},{0,1,0,0},{0,0,0,0}};
+    for(unsigned trial=0;trial<sizeof(offsets)/sizeof(offsets[0]);++trial) {
+        blank(); at(2,2);
+        image_command("a=T,i=811,p=1,f=24,s=8,v=8,C=1,q=2",original,sizeof(original),1);
+        const unsigned *o=offsets[trial];
+        control("\033_Ga=c,i=811,r=1,c=1,X=%u,Y=%u,x=%u,y=%u,w=7,h=7,C=1,N=2,q=2\033\\",o[0],o[1],o[2],o[3]);
+        capture();
+        for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x) {
+            unsigned sx=x,sy=y;
+            if(x>=o[2] && x<o[2]+7 && y>=o[3] && y<o[3]+7) { sx=x-o[2]+o[0]; sy=y-o[3]+o[1]; }
+            pixel(px(2)+x,py(2)+y,sx*30,sy*30,40,1,"overlap copy matches immutable source snapshot");
+        }
+    }
+    const char *invalid[]={
+        "a=c,i=811,r=1,c=1,X=0,Y=0,x=1,y=1,w=7,h=7,C=1,q=2",
+        "a=c,i=811,r=1,c=1,X=0,Y=0,x=1,y=1,w=7,h=7,C=0,N=2,q=2",
+        "a=c,i=811,r=1,c=1,X=0,Y=0,x=2,y=2,w=7,h=7,C=1,N=2,q=2",
+        "a=c,i=811,r=1,c=1,X=4294967295,Y=0,x=0,y=0,w=7,h=7,C=1,N=2,q=2",
+    };
+    for(unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);++i) {
+        control("\033_G%s\033\\",invalid[i]); capture();
+        for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x)
+            pixel(px(2)+x,py(2)+y,x*30,y*30,40,1,"invalid composition leaves the image unchanged");
+    }
+    puts("PASS graphics N=2 overlapping copies in every direction, same-region copy, standard rejection and bounds checks");
+}
+
 int main(void) {
     char helper[PATH_MAX];
     require(realpath("build/batty-session",helper)!=NULL,"session helper path");
+    require(!setenv("BATTY_KITTY_LOCAL_FILES","1",1),"enable local file fixture");
     char *args[]={"/bin/cat",NULL};
     require(!bt_window_open(&window,helper,args,environ,64,20,"monospace",16,false),"open graphics test window");
+    bool file_medium=false;
+    GhosttyString temp_dir={0};
+    require(ghostty_terminal_get(window.session.terminal,GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE,&file_medium)==GHOSTTY_SUCCESS &&
+            ghostty_terminal_get(window.session.terminal,GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE,&temp_dir)==GHOSTTY_SUCCESS &&
+            file_medium && temp_dir.len,"Kilix sessions enable local file image media");
     cell_width=window.session.cell_width; cell_height=window.session.cell_height;
     require(cell_width>=4 && cell_height>=8,"usable font cell metrics");
     test_pixels(); test_filtering_and_offset_shrink(); test_chunked(); test_redraw(); test_crop_and_layers();
     test_zlib_upload(); test_relative_placements(); test_erased_backgrounds(); test_empty_crops();
     test_screens_and_geometry(); test_sixel(); test_c1_strings(); test_sixel_page_mode();
+    test_shared_frames();
+    test_file_frames();
+    test_animation_playback();
+    test_unicode_placeholders();
+    test_virtual_relative_placements();
+    test_overlapping_copy();
+    test_damage_alpha_and_replacement();
 
     /* Retain a useful final artifact, with both protocols and alpha visible. */
     blank(); at(2,2); solid(701,8,8,24,30,170,240,255,",c=18,r=5");

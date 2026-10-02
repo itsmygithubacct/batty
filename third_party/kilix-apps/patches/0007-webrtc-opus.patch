@@ -1,0 +1,19 @@
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -640,9 +640,15 @@
+     def start_rtsp_pub(self, n, w, h, rtsp_port, path="kilix", fps=15,
+                        debug=False, audio=None, piped=False):
+         """Publish into MediaMTX over loopback RTSP (E2: WebRTC tier). MediaMTX
+-        re-serves it as WHEP/WebRTC to browsers with sub-500 ms latency."""
++        re-serves it as WHEP/WebRTC to browsers with sub-500 ms latency.
++        WebRTC cannot carry the AAC used by HLS and MSE, so use Opus here."""
+         argv = self._enc_argv(f"rtsp-{n}", n, w, h, fps, 2.0, debug, audio,
+                               piped)
++        if audio:
++            codec = argv.index("-c:a")
++            argv[codec + 1] = "libopus"
++            bitrate = argv.index("-b:a")
++            argv[bitrate + 1] = "96k"
+         argv += ["-f", "rtsp", "-rtsp_transport", "tcp",
+                  f"rtsp://127.0.0.1:{rtsp_port}/{path}"]
+         return self._spawn_enc(f"rtsp-{n}", argv, piped)

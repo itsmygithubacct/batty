@@ -1,0 +1,161 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -eu
+root=$(dirname -- "$(readlink -f -- "$0")")
+case ${1:-} in
+    --install-desktop) shift; exec python3 "$root/tools/kilix_desktop.py" install "$@" ;;
+    --uninstall-desktop) shift; exec python3 "$root/tools/kilix_desktop.py" uninstall "$@" ;;
+    save) shift; exec python3 "$root/tools/kilix_workspace.py" "$@" ;;
+    screen-size|font-size) shift; exec python3 -B "$root/tools/kilix_screen_size.py" "$@" ;;
+    share) shift; exec python3 -B "$root/tools/kilix_share.py" "$@" ;;
+    pty|pty-manager|pty-tui) shift; exec python3 -B "$root/tools/kilix_pty.py" "$@" ;;
+    screensaver|screensavers) shift; exec python3 -B "$root/tools/kilix_screensaver.py" "$@" ;;
+    mux)
+        shift
+        case ${1:-} in
+            -h|--help|help) printf '%s\n' 'usage: kilix mux [a|attach] [NAME]'; exit 0;;
+            a|attach) shift;;
+        esac
+        exec "$root/kilix" serve "$@" ;;
+    transcript) shift; exec python3 "$root/tools/kilix_transcript.py" "$@" ;;
+    apps) shift; exec python3 "$root/tools/kilix_catalog.py" "$@" ;;
+    app|application) shift; exec python3 -B "$root/tools/kilix_content_app.py" "$@" ;;
+    install) shift; exec python3 -B "$root/tools/kilix_install.py" "$@" ;;
+    default-desktop) shift; exec python3 -B "$root/tools/kilix_default_desktop.py" "$@" ;;
+    status) shift; exec python3 -B "$root/tools/kilix_status.py" "$@" ;;
+    open-url)
+        shift
+        [ "$#" -le 1 ] || { printf '%s\n' 'usage: kilix open-url [URL]' >&2; exit 2; }
+        if [ "$#" -eq 0 ]; then
+            exec "$root/kilix" app run kilix-chawan --action browse
+        fi
+        exec "$root/kilix" app run kilix-chawan --action open -- "$1" ;;
+    chawan) shift; exec "$root/kilix" app run kilix-chawan -- "$@" ;;
+    bonsai) shift; exec "$root/kilix" app run kilix-model-store -- "$@" ;;
+    mask) shift; exec "$root/kilix" app run kilix-region-painter -- "$@" ;;
+    launcher)
+        shift
+        if [ "${1:-}" = --install-only ]; then
+            shift
+            [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix launcher --install-only' >&2; exit 2; }
+            exec "$root/kilix" app install kilix-launcher
+        fi
+        exec "$root/kilix" app run kilix-launcher -- "$@" ;;
+    temps|memory)
+        tool=$1
+        shift
+        exec "$root/kilix" app run "kilix-$tool" -- "$@" ;;
+    tmux)
+        shift
+        exec "$root/kilix" app run kilix-tmux-manager -- "$@" ;;
+    games) shift; exec python3 -B "$root/tools/kilix_games.py" "$@" ;;
+    laptop) shift; exec python3 -B "$root/tools/kilix_laptop.py" "$@" ;;
+    amp)
+        shift
+        if [ "${1:-}" = --install-only ]; then
+            shift
+            [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix amp --install-only' >&2; exit 2; }
+            exec "$root/kilix" app install kilix-amp
+        fi
+        exec "$root/kilix" app run kilix-amp -- "$@" ;;
+    rtsp|cameras|camera)
+        shift
+        case ${1:-} in
+            -h|--help|help)
+                printf '%s\n' 'usage: kilix rtsp [--install-only|--force-install] [ARGS...]' \
+                    'Watch configured RTSP cameras in the terminal.' \
+                    'Use `kilix rtsp list` to list cameras in Batty-private storage.'
+                exit 0 ;;
+            --install-only)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix rtsp --install-only' >&2; exit 2; }
+                exec "$root/kilix" app install kilix-rtsp ;;
+            --force-install)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix rtsp --force-install' >&2; exit 2; }
+                exec "$root/kilix" app reinstall kilix-rtsp ;;
+        esac
+        exec "$root/kilix" app run kilix-rtsp -- "$@" ;;
+    look|analyze|analyse)
+        shift
+        case ${1:-} in
+            -h|--help|help)
+                printf '%s\n' 'usage: kilix look [--install-only|--force-install] [ARGS...]' \
+                    'Analyze an image, recording, or camera with the pinned image analyzer.' \
+                    'Use `kilix look classes` to list the available detection classes.'
+                exit 0 ;;
+            --install-only)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix look --install-only' >&2; exit 2; }
+                exec "$root/kilix" app install kilix-object-detect ;;
+            --force-install)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix look --force-install' >&2; exit 2; }
+                exec "$root/kilix" app reinstall kilix-object-detect ;;
+        esac
+        exec "$root/kilix" app run kilix-object-detect -- "$@" ;;
+    nvr|record|recorder)
+        shift
+        case ${1:-} in
+            -h|--help|help)
+                printf '%s\n' 'usage: kilix nvr [--install-only|--force-install] [ARGS...]' \
+                    'Record cameras, inspect events, and review clips.' \
+                    'Use `kilix nvr cameras` to list configured cameras.'
+                exit 0 ;;
+            --install-only)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix nvr --install-only' >&2; exit 2; }
+                exec "$root/kilix" app install kilix-nvr ;;
+            --force-install)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix nvr --force-install' >&2; exit 2; }
+                exec "$root/kilix" app reinstall kilix-nvr ;;
+        esac
+        exec "$root/kilix" app run kilix-nvr -- "$@" ;;
+    pdf-view|pdf-viewer)
+        shift
+        case ${1:-} in
+            -h|--help|help)
+                printf '%s\n' 'usage: kilix pdf-view [--install-only|--print-ref] [PDF]' \
+                    'Open a PDF in the pinned terminal viewer.'
+                exit 0 ;;
+            --install-only)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix pdf-view --install-only' >&2; exit 2; }
+                exec "$root/kilix" app install kilix-pdf ;;
+            --print-ref)
+                shift
+                [ "$#" -eq 0 ] || { printf '%s\n' 'usage: kilix pdf-view --print-ref' >&2; exit 2; }
+                exec "$root/kilix" app ref kilix-pdf ;;
+        esac
+        exec "$root/kilix" app run kilix-pdf -- "$@" ;;
+    settings)
+        shift
+        if [ "$#" -eq 0 ]; then
+            exec "$root/kilix" desktop --app settings
+        fi
+        exec python3 "$root/tools/settings_cli.py" "$@" ;;
+    run) shift; exec python3 "$root/tools/kilix_apps.py" "$@" ;;
+    desktop)
+        shift
+        if [ "${1:-}" = tui ] || [ "${1:-}" = kilix-tui ]; then
+            shift
+            exec "$root/kilix" tui "$@"
+        fi
+        case ${1:-} in
+            cap|kilix-cap|mansion) shift; exec python3 -B "$root/tools/kilix_graphical_desktop.py" cap "$@" ;;
+            land|kilix-land|kilix-land-desktop) shift; exec python3 -B "$root/tools/kilix_graphical_desktop.py" land "$@" ;;
+            icewm|kilix-icewm) shift; exec python3 -B "$root/tools/kilix_graphical_desktop.py" icewm "$@" ;;
+        esac
+        exec python3 "$root/tools/kilix_desktop_launch.py" "$@" ;;
+    xp) shift; exec "$root/kilix" desktop xp "$@" ;;
+    tui) shift; exec python3 -B "$root/tools/kilix_tui_launch.py" "$@" ;;
+    tts|stt|voice|speak|dictate) tool=$1; shift; exec python3 -B "$root/tools/kilix_voice.py" "$tool" "$@" ;;
+    cap|land|icewm) provider=$1; shift; exec "$root/kilix" desktop "$provider" "$@" ;;
+    serve|attach|view) exec python3 "$root/tools/kilix_mux.py" "$@" ;;
+    panes|pane-center) shift; exec python3 "$root/tools/kilix_panes.py" "$@" ;;
+    remote) shift; exec python3 "$root/tools/kilix_stream.py" "$@" ;;
+    ls|focus|watch|close|rename|reload-settings|new-pane|split|new-page|new-tab|launch)
+        exec python3 "$root/tools/kilix_remote.py" "$@" ;;
+esac
+exec python3 "$root/tools/runtime.py" kilix "$@"

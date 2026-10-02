@@ -1,0 +1,284 @@
+--- a/src/terminal/c/kitty_graphics.zig
++++ b/src/terminal/c/kitty_graphics.zig
+@@ -4,6 +4,7 @@
+ const lib = @import("../lib.zig");
+ const CAllocator = lib.alloc.Allocator;
+ const kitty_storage = @import("../kitty/graphics_storage.zig");
++const kitty_unicode = @import("../kitty/graphics_unicode.zig");
+ const kitty_cmd = @import("../kitty/graphics_command.zig");
+ const Image = @import("../kitty/graphics_image.zig").Image;
+ const grid_ref = @import("grid_ref.zig");
+@@ -48,6 +49,203 @@
+     }
+ else
+     void;
++
++pub const VirtualPlacementIterator = if (build_options.kitty_graphics)
++    ?*VirtualPlacementIteratorWrapper
++else
++    ?*anyopaque;
++
++const VirtualPlacementIteratorWrapper = if (build_options.kitty_graphics)
++    struct {
++        alloc: std.mem.Allocator,
++        terminal: *Terminal,
++        inner: kitty_unicode.PlacementIterator,
++        relative: PlacementMap.Iterator,
++        origins: std.AutoHashMapUnmanaged(
++            kitty_storage.ImageStorage.PlacementKey,
++            struct { x: u32, y: u32 },
++        ) = .empty,
++        has_relative: bool = false,
++        relative_phase: bool = false,
++        cell_width: u32,
++        cell_height: u32,
++    }
++else
++    void;
++
++pub const VirtualPlacementInfo = extern struct {
++    size: usize,
++    image_id: u32,
++    placement_id: u32,
++    z: i32,
++    x_offset: u32,
++    y_offset: u32,
++    geometry: PlacementRenderInfo,
++};
++
++pub fn virtual_placement_iterator_new(
++    terminal_: terminal_c.Terminal,
++    alloc_: ?*const CAllocator,
++    cell_width: u32,
++    cell_height: u32,
++    out: *VirtualPlacementIterator,
++) callconv(lib.calling_conv) Result {
++    out.* = null;
++    if (comptime !build_options.kitty_graphics) return .no_value;
++    const wrapper = terminal_ orelse return .invalid_value;
++    if (cell_width == 0 or cell_height == 0) return .invalid_value;
++    const t = wrapper.terminal;
++    const top = t.screens.active.pages.getTopLeft(.viewport);
++    const bot = t.screens.active.pages.getBottomRight(.viewport) orelse return .invalid_value;
++    const storage = &t.screens.active.kitty_images;
++    const alloc = lib.alloc.default(alloc_);
++    const iter = alloc.create(VirtualPlacementIteratorWrapper) catch return .out_of_memory;
++    iter.* = .{
++        .alloc = alloc,
++        .terminal = t,
++        .inner = kitty_unicode.placementIterator(top, bot),
++        .relative = storage.placements.iterator(),
++        .cell_width = cell_width,
++        .cell_height = cell_height,
++    };
++    var placements = storage.placements.iterator();
++    while (placements.next()) |entry| {
++        const rel = switch (entry.value_ptr.location) {
++            .relative => |value| value,
++            else => continue,
++        };
++        const chain = storage.resolveChain(rel) orelse continue;
++        if (chain.root.location == .virtual) {
++            iter.has_relative = true;
++            break;
++        }
++    }
++    if (iter.has_relative) {
++        var origin_it = kitty_unicode.placementIterator(top, bot);
++        while (origin_it.next()) |p| {
++            const target = storage.placeholderTarget(p.image_id, p.placement_id) orelse continue;
++            const vp = t.screens.active.pages.pointFromPin(.viewport, p.pin) orelse continue;
++            const gop = iter.origins.getOrPut(alloc, target.key) catch {
++                iter.origins.deinit(alloc);
++                alloc.destroy(iter);
++                return .out_of_memory;
++            };
++            const x: u32 = vp.viewport.x;
++            const y: u32 = vp.viewport.y;
++            if (gop.found_existing) {
++                gop.value_ptr.x = @min(gop.value_ptr.x, x);
++                gop.value_ptr.y = @min(gop.value_ptr.y, y);
++            } else gop.value_ptr.* = .{ .x = x, .y = y };
++        }
++    }
++    out.* = iter;
++    return .success;
++}
++
++pub fn virtual_placement_iterator_free(iter_: VirtualPlacementIterator) callconv(lib.calling_conv) void {
++    if (comptime !build_options.kitty_graphics) return;
++    const iter = iter_ orelse return;
++    iter.origins.deinit(iter.alloc);
++    iter.alloc.destroy(iter);
++}
++
++pub fn virtual_placement_next(
++    iter_: VirtualPlacementIterator,
++    out: ?*VirtualPlacementInfo,
++) callconv(lib.calling_conv) bool {
++    if (comptime !build_options.kitty_graphics) return false;
++    const iter = iter_ orelse return false;
++    const info = out orelse return false;
++    if (info.size != @sizeOf(VirtualPlacementInfo) or
++        info.geometry.size != @sizeOf(PlacementRenderInfo)) return false;
++    const t = iter.terminal;
++    const storage = &t.screens.active.kitty_images;
++    while (!iter.relative_phase) {
++        const p = iter.inner.next() orelse {
++            iter.relative_phase = true;
++            break;
++        };
++        const image = storage.imageById(p.image_id) orelse continue;
++        if (image.data.isPending()) continue;
++        const rp = p.renderPlacement(storage, &image, iter.cell_width, iter.cell_height) catch continue;
++        if (rp.dest_width == 0 or rp.dest_height == 0 or
++            rp.source_width == 0 or rp.source_height == 0) continue;
++        const vp = t.screens.active.pages.pointFromPin(.viewport, rp.top_left) orelse continue;
++        info.* = .{
++            .size = @sizeOf(VirtualPlacementInfo),
++            .image_id = p.image_id,
++            .placement_id = p.placement_id,
++            .z = -1,
++            .x_offset = rp.offset_x,
++            .y_offset = rp.offset_y,
++            .geometry = .{
++                .size = @sizeOf(PlacementRenderInfo),
++                .pixel_width = rp.dest_width,
++                .pixel_height = rp.dest_height,
++                .grid_cols = p.width,
++                .grid_rows = p.height,
++                .viewport_col = @intCast(vp.viewport.x),
++                .viewport_row = @intCast(vp.viewport.y),
++                .viewport_visible = true,
++                .source_x = rp.source_x,
++                .source_y = rp.source_y,
++                .source_width = rp.source_width,
++                .source_height = rp.source_height,
++            },
++        };
++        return true;
++    }
++    if (!iter.has_relative) return false;
++    while (iter.relative.next()) |entry| {
++        const p = entry.value_ptr;
++        const rel = switch (p.location) {
++            .relative => |value| value,
++            else => continue,
++        };
++        const chain = storage.resolveChain(rel) orelse continue;
++        if (chain.root.location != .virtual) continue;
++        const origin = iter.origins.get(chain.root_key) orelse continue;
++        const image = storage.imageById(entry.key_ptr.image_id) orelse continue;
++        if (image.data.isPending()) continue;
++        const grid = p.gridSize(image, t);
++        if (grid.cols == 0 or grid.rows == 0) continue;
++        const x: i64 = @as(i64, origin.x) + chain.horizontal_offset;
++        const y: i64 = @as(i64, origin.y) + chain.vertical_offset;
++        if (y >= t.rows or y + grid.rows - 1 < 0 or
++            x >= t.cols or x + grid.cols - 1 < 0) continue;
++        const col = std.math.cast(i32, x) orelse continue;
++        const row = std.math.cast(i32, y) orelse continue;
++        const size = p.pixelSize(image, t);
++        const offset = p.cellOffset(t);
++        const source = p.sourceRect(image);
++        if (size.width == 0 or size.height == 0 or
++            source.width == 0 or source.height == 0) continue;
++        info.* = .{
++            .size = @sizeOf(VirtualPlacementInfo),
++            .image_id = entry.key_ptr.image_id,
++            .placement_id = entry.key_ptr.placement_id.id,
++            .z = p.z,
++            .x_offset = offset.x,
++            .y_offset = offset.y,
++            .geometry = .{
++                .size = @sizeOf(PlacementRenderInfo),
++                .pixel_width = size.width,
++                .pixel_height = size.height,
++                .grid_cols = grid.cols,
++                .grid_rows = grid.rows,
++                .viewport_col = col,
++                .viewport_row = row,
++                .viewport_visible = true,
++                .source_x = source.x,
++                .source_y = source.y,
++                .source_width = source.width,
++                .source_height = source.height,
++            },
++        };
++        return true;
++    }
++    return false;
++}
+ 
+ /// C: GhosttyKittyGraphicsData
+ pub const Data = enum(c_int) {
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -14,6 +14,9 @@
+ pub const kitty_graphics = @import("kitty_graphics.zig");
+ pub const kitty_graphics_get = kitty_graphics.get;
+ pub const kitty_graphics_animation_tick = kitty_graphics.animation_tick;
++pub const kitty_graphics_virtual_placement_iterator_new = kitty_graphics.virtual_placement_iterator_new;
++pub const kitty_graphics_virtual_placement_next = kitty_graphics.virtual_placement_next;
++pub const kitty_graphics_virtual_placement_iterator_free = kitty_graphics.virtual_placement_iterator_free;
+ pub const kitty_graphics_image = kitty_graphics.image_get_handle;
+ pub const kitty_graphics_image_get = kitty_graphics.image_get;
+ pub const kitty_graphics_image_get_multi = kitty_graphics.image_get_multi;
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -385,6 +385,9 @@
+         if (features.kitty_graphics) {
+             @export(&c.kitty_graphics_get, .{ .name = "ghostty_kitty_graphics_get" });
+             @export(&c.kitty_graphics_animation_tick, .{ .name = "ghostty_kitty_graphics_animation_tick" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_new, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_new" });
++            @export(&c.kitty_graphics_virtual_placement_next, .{ .name = "ghostty_kitty_graphics_virtual_placement_next" });
++            @export(&c.kitty_graphics_virtual_placement_iterator_free, .{ .name = "ghostty_kitty_graphics_virtual_placement_iterator_free" });
+             @export(&c.kitty_graphics_image, .{ .name = "ghostty_kitty_graphics_image" });
+             @export(&c.kitty_graphics_image_get, .{ .name = "ghostty_kitty_graphics_image_get" });
+             @export(&c.kitty_graphics_image_get_multi, .{ .name = "ghostty_kitty_graphics_image_get_multi" });
+--- a/include/ghostty/vt/kitty_graphics.h
++++ b/include/ghostty/vt/kitty_graphics.h
+@@ -486,6 +486,43 @@
+   uint32_t source_height;
+ } GhosttyKittyGraphicsPlacementRenderInfo;
+ 
++/** Borrowed iterator over visible Unicode placeholders and relative children. */
++typedef struct GhosttyKittyGraphicsVirtualPlacementIteratorImpl*
++    GhosttyKittyGraphicsVirtualPlacementIterator;
++
++/** A drawable fragment of a virtual Kitty graphics placement. */
++typedef struct {
++  size_t size;
++  uint32_t image_id;
++  uint32_t placement_id;
++  int32_t z;
++  uint32_t x_offset;
++  uint32_t y_offset;
++  GhosttyKittyGraphicsPlacementRenderInfo geometry;
++} GhosttyKittyGraphicsVirtualPlacementInfo;
++
++/**
++ * Iterate visible Unicode placeholder fragments and relative descendants on
++ * the active screen. Relative descendants are anchored to the minimum
++ * viewport coordinates of their root placeholder cells.
++ * The terminal must not be mutated until the iterator is freed. The caller
++ * supplies its current pixel cell size; the returned geometry uses the same
++ * viewport and source coordinates as ordinary Kitty placements.
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_virtual_placement_iterator_new(
++    GhosttyTerminal terminal,
++    const GhosttyAllocator* allocator,
++    uint32_t cell_width,
++    uint32_t cell_height,
++    GhosttyKittyGraphicsVirtualPlacementIterator* out);
++GHOSTTY_API bool ghostty_kitty_graphics_virtual_placement_next(
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator,
++    GhosttyKittyGraphicsVirtualPlacementInfo* out);
++GHOSTTY_API void ghostty_kitty_graphics_virtual_placement_iterator_free(
++    GhosttyKittyGraphicsVirtualPlacementIterator iterator);
++
+ /**
+  * Get data from a kitty graphics storage instance.
+  *

@@ -4,6 +4,7 @@
 #include "render.h"
 #include "image_renderer.h"
 #include "presentation.h"
+#include <ghostty/vt/unicode.h>
 #include <GLES3/gl3.h>
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
@@ -43,6 +44,9 @@ typedef struct {
 struct BtRenderer {
     SDL_Window *window;
     SDL_GLContext context;
+    bool owns_context, composite, scale_region;
+    SDL_Rect region;
+    int origin_x, origin_y, viewport_width, viewport_height;
     FT_Library ft;
     FcConfig *fc;
     FcFontSet *sets[4];
@@ -71,6 +75,8 @@ struct BtRenderer {
     bool animated;
     bool capture_mode, last_focused;
     BtSession *last_session;
+    char preedit[1025];
+    unsigned preedit_start, preedit_length;
     char error[256];
 };
 static int error(BtRenderer *r, const char *message) {
@@ -79,6 +85,18 @@ static int error(BtRenderer *r, const char *message) {
 }
 const char *bt_renderer_error(BtRenderer *r) { return r->error; }
 uint64_t bt_renderer_frames(BtRenderer *r) { return r->frames; }
+bool bt_renderer_due(BtRenderer *r) { return !r->had_frame || (r->animated && r->blink_tick!=bt_millis()/600); }
+void bt_renderer_preedit(BtRenderer *r, const char *utf8, int start, int length) {
+    size_t n=utf8?strnlen(utf8,sizeof(r->preedit)):0;
+    if(n>=sizeof(r->preedit)) {
+        n=sizeof(r->preedit)-1;
+        while(n && ((unsigned char)utf8[n]&0xc0)==0x80) --n;
+    }
+    if(n) memcpy(r->preedit,utf8,n);
+    r->preedit[n]=0;
+    r->preedit_start=start>0?(unsigned)(start>1024?1024:start):0;
+    r->preedit_length=length>0?(unsigned)(length>1024?1024:length):0;
+}
 int bt_renderer_graphics(BtRenderer *r, char *out, size_t capacity) {
     if(SDL_GL_MakeCurrent(r->window,r->context)) return error(r,SDL_GetError());
     const GLubyte *vendor=glGetString(GL_VENDOR), *renderer=glGetString(GL_RENDERER);
@@ -117,6 +135,32 @@ static void quad(BtRenderer *r, float x, float y, float w, float h,
 }
 static void rect(BtRenderer *r, float x, float y, float w, float h, GhosttyColorRgb color) {
     quad(r,x,y,w,h,.5f/ATLAS_SIZE,.5f/ATLAS_SIZE,0,0,color);
+}
+static void underline(BtRenderer *r, unsigned x, unsigned y, int style, GhosttyColorRgb color) {
+    unsigned stroke=r->ch>=32?(unsigned)r->ch/16:1;
+    float left=PAD+x*r->cw, bottom=PAD+(y+1)*r->ch;
+    if(style==GHOSTTY_SGR_UNDERLINE_SINGLE || style==GHOSTTY_SGR_UNDERLINE_DOUBLE) {
+        rect(r,left,bottom-2*stroke,r->cw,stroke,color);
+        if(style==GHOSTTY_SGR_UNDERLINE_DOUBLE)
+            rect(r,left,bottom-4*stroke,r->cw,stroke,color);
+        return;
+    }
+    /* Phase follows terminal pixels, so adjacent cells form one continuous
+     * pattern even across style runs, wide tails and cursor redraws. */
+    for(unsigned pixel=0;pixel<(unsigned)r->cw;++pixel) {
+        unsigned position=x*(unsigned)r->cw+pixel;
+        if(style==GHOSTTY_SGR_UNDERLINE_DOTTED) {
+            if(position%(4*stroke)<stroke)
+                rect(r,left+pixel,bottom-2*stroke,1,stroke,color);
+        } else if(style==GHOSTTY_SGR_UNDERLINE_DASHED) {
+            if(position%(6*stroke)<4*stroke)
+                rect(r,left+pixel,bottom-2*stroke,1,stroke,color);
+        } else if(style==GHOSTTY_SGR_UNDERLINE_CURLY) {
+            unsigned phase=position%(4*stroke);
+            unsigned rise=phase<2*stroke?phase:4*stroke-phase;
+            rect(r,left+pixel,bottom-4*stroke+rise,1,stroke,color);
+        }
+    }
 }
 static int set_size(BtRenderer *r, Font *font) {
     font->scale = 1;
@@ -239,13 +283,14 @@ int bt_renderer_metrics(BtRenderer *r, int *cw, int *ch) {
     *cw=r->cw; *ch=r->ch;
     return 0;
 }
-BtRenderer *bt_renderer_new(SDL_Window *window, const char *family, int size, char *out_error, size_t error_size) {
+BtRenderer *bt_renderer_new_shared(SDL_Window *window, SDL_GLContext context, const char *family, int size, char *out_error, size_t error_size) {
     BtRenderer *r=calloc(1,sizeof(*r));
     if (!r) { snprintf(out_error,error_size,"Could not allocate renderer"); return NULL; }
     r->window=window; r->requested_size=size; r->pixel_size=size;
-    r->context=SDL_GL_CreateContext(window);
+    r->owns_context=context==NULL;
+    r->context=context?context:SDL_GL_CreateContext(window);
     if (!r->context) { error(r,SDL_GetError()); goto fail; }
-    SDL_GL_MakeCurrent(window,r->context);
+    if(SDL_GL_MakeCurrent(window,r->context)) { error(r,SDL_GetError()); goto fail; }
     SDL_GL_SetSwapInterval(0); /* The controller sets cadence; idle windows do not redraw. */
     if (FT_Init_FreeType(&r->ft)) { error(r,"Could not initialize FreeType"); goto fail; }
     r->fc=FcInitLoadConfigAndFonts();
@@ -300,6 +345,9 @@ fail:
     bt_renderer_free(r);
     return NULL;
 }
+BtRenderer *bt_renderer_new(SDL_Window *window, const char *family, int size, char *error, size_t capacity) {
+    return bt_renderer_new_shared(window,NULL,family,size,error,capacity);
+}
 
 static bool equal_color(GhosttyColorRgb a, GhosttyColorRgb b) { return a.r==b.r && a.g==b.g && a.b==b.b; }
 static bool same_run(Cell *a, Cell *b) {
@@ -320,6 +368,8 @@ static int read_row(BtRenderer *r, const BtPresentation *f, unsigned y) {
         Cell *c=&r->cells[x];
         memset(c,0,sizeof(*c));
         c->style=source->style; c->wide=source->wide; c->length=source->length;
+        bool placeholder=c->length && f->codepoints[source->offset]==0x10eeeeu;
+        if(placeholder) { c->length=1; c->style.invisible=true; }
         c->fg=source->foreground; c->bg=source->background;
         if (c->style.bold && c->style.fg_color.tag==GHOSTTY_STYLE_COLOR_PALETTE && c->style.fg_color.value.palette<8)
             c->fg=colors.palette[c->style.fg_color.value.palette+8];
@@ -339,7 +389,8 @@ static int read_row(BtRenderer *r, const BtPresentation *f, unsigned y) {
             if (!points) return error(r,"Could not allocate grapheme buffer");
             r->codepoints=points; r->cp_capacity=cap;
         }
-        if (c->length) memcpy(r->codepoints+c->offset,f->codepoints+source->offset,c->length*sizeof(uint32_t));
+        if(placeholder) r->codepoints[c->offset]=' ';
+        else if (c->length) memcpy(r->codepoints+c->offset,f->codepoints+source->offset,c->length*sizeof(uint32_t));
         else { c->length=1; r->codepoints[c->offset]=' '; }
         r->cp_used+=c->length;
         c->font=choose_font(r,c);
@@ -406,6 +457,14 @@ static void draw_run_clipped(BtRenderer *r, unsigned begin, unsigned end, unsign
 static void draw_run(BtRenderer *r, unsigned begin, unsigned end, unsigned y, bool blink_visible) {
     draw_run_clipped(r,begin,end,y,blink_visible,NULL,NULL);
 }
+static void decorations(BtRenderer *r, unsigned x, unsigned y, Cell *c, bool blink_visible,
+                         const GhosttyColorRgb *foreground) {
+    if(c->style.invisible || (c->style.blink && !blink_visible)) return;
+    GhosttyColorRgb color=foreground?*foreground:c->fg;
+    if(c->style.underline) underline(r,x,y,c->style.underline,foreground?*foreground:c->underline);
+    if(c->style.strikethrough) rect(r,PAD+x*r->cw,PAD+y*r->ch+r->ascent*.65f,r->cw,1,color);
+    if(c->style.overline) rect(r,PAD+x*r->cw,PAD+y*r->ch,r->cw,1,color);
+}
 static void text_state(BtRenderer *r) {
     glUseProgram(r->program); glUniform2f(r->viewport_uniform,r->width,r->height);
     glBindVertexArray(r->vao); glBindBuffer(GL_ARRAY_BUFFER,r->vbo);
@@ -414,7 +473,8 @@ static void text_state(BtRenderer *r) {
 }
 static int image_pass(BtRenderer *r, const BtPresentation *f, int layer) {
     flush(r);
-    if(bt_images_draw(r->images,layer,r->width,r->height,f->cols,f->rows))
+    if(bt_images_draw(r->images,layer,r->width,r->height,f->cols,f->rows,r->origin_x,r->origin_y,
+                      r->viewport_width,r->viewport_height))
         return error(r,bt_images_error(r->images));
     text_state(r); return 0;
 }
@@ -430,6 +490,82 @@ static void backgrounds(BtRenderer *r, const BtPresentation *f) {
             rect(r,PAD+x*r->cw,PAD+y*r->ch,r->cw,r->ch,bg);
         }
     }
+}
+typedef struct { unsigned offset,length,width; } PreeditCluster;
+static unsigned preedit_decode(const char *text, uint32_t out[1024]) {
+    unsigned count=0; size_t at=0,bytes=strlen(text);
+    const unsigned char *p=(const unsigned char *)text;
+    while(at<bytes && count<1024) {
+        uint32_t cp=p[at]; unsigned width=1;
+        if(p[at]>=0xc2 && p[at]<=0xdf) { cp=p[at]&31u; width=2; }
+        else if(p[at]>=0xe0 && p[at]<=0xef) { cp=p[at]&15u; width=3; }
+        else if(p[at]>=0xf0 && p[at]<=0xf4) { cp=p[at]&7u; width=4; }
+        bool valid=width==1?p[at]<0x80:true;
+        for(unsigned i=1;i<width && valid;++i) {
+            if(at+i>=bytes || (p[at+i]&0xc0)!=0x80) valid=false;
+            else cp=(cp<<6)|(p[at+i]&63u);
+        }
+        if(valid && ((width==2 && cp<0x80) || (width==3 && cp<0x800) ||
+                     (width==4 && cp<0x10000) || (cp>=0xd800 && cp<=0xdfff) || cp>0x10ffff))
+            valid=false;
+        if(!valid) { cp=0xfffd; width=1; }
+        if(cp<32 || (cp>=0x7f && cp<0xa0)) cp=0xfffd;
+        out[count++]=cp; at+=width;
+    }
+    return count;
+}
+static int draw_preedit(BtRenderer *r, const BtPresentation *f) {
+    if(!r->preedit[0] || !f->cursor.viewport_has_value || !f->cols || !f->rows) return 0;
+    uint32_t points[1024]; PreeditCluster clusters[1024];
+    unsigned count=preedit_decode(r->preedit,points), used=0,total=0,caret=0;
+    unsigned start=r->preedit_start<count?r->preedit_start:count;
+    for(unsigned i=0;i<count;) {
+        uint8_t width=0;
+        unsigned length=(unsigned)ghostty_unicode_grapheme_width(points+i,count-i,&width);
+        if(!length) break;
+        if(!width) width=1; /* A leading combining mark still needs a visible cell. */
+        clusters[used++]=(PreeditCluster){i,length,width};
+        if(i<start) caret+=width;
+        total+=width; i+=length;
+    }
+    if(!used) return 0;
+    unsigned first=0,skipped=0;
+    while(total>f->cols && first+1<used && caret-skipped>=f->cols) {
+        skipped+=clusters[first++].width;
+    }
+    unsigned visible=0,last=first;
+    while(last<used && visible+clusters[last].width<=f->cols) visible+=clusters[last++].width;
+    if(!visible) return 0;
+    unsigned cursor_x=f->cursor.viewport_x<f->cols?f->cursor.viewport_x:f->cols-1;
+    unsigned x0=total<=f->cols && cursor_x+visible>f->cols?f->cols-visible:cursor_x;
+    if(total>f->cols) x0=0;
+    unsigned y=f->cursor.viewport_y<f->rows?f->cursor.viewport_y:f->rows-1;
+    GhosttyColorRgb foreground={245,247,252}, background={35,43,60};
+    GhosttyColorRgb selected={65,85,124}, underline={119,192,255};
+    rect(r,PAD+x0*r->cw,PAD+y*r->ch,visible*r->cw,r->ch,background);
+    for(unsigned i=first,x=x0;i<last;++i) {
+        PreeditCluster cluster=clusters[i];
+        bool highlight=r->preedit_length && cluster.offset<start+r->preedit_length &&
+                       cluster.offset+cluster.length>start;
+        if(highlight) rect(r,PAD+x*r->cw,PAD+y*r->ch,cluster.width*r->cw,r->ch,selected);
+        if(cluster.length>r->cp_capacity) {
+            uint32_t *expanded=realloc(r->codepoints,cluster.length*sizeof(*expanded));
+            if(!expanded) return error(r,"Could not allocate preedit text");
+            r->codepoints=expanded; r->cp_capacity=cluster.length;
+        }
+        memcpy(r->codepoints,points+cluster.offset,cluster.length*sizeof(*points));
+        Cell *cell=&r->cells[x]; memset(cell,0,sizeof(*cell));
+        cell->length=cluster.length; cell->fg=foreground;
+        cell->font=choose_font(r,cell);
+        if(cluster.width==2) { memset(&r->cells[x+1],0,sizeof(*r->cells)); r->cells[x+1].wide=GHOSTTY_CELL_WIDE_SPACER_TAIL; }
+        draw_run(r,x,x+cluster.width,y,true);
+        rect(r,PAD+x*r->cw,PAD+(y+1)*r->ch-2,cluster.width*r->cw,2,underline);
+        x+=cluster.width;
+    }
+    unsigned caret_x=caret>=skipped?caret-skipped:0;
+    if(caret_x>=visible) caret_x=visible-1;
+    rect(r,PAD+(x0+caret_x)*r->cw,PAD+y*r->ch,2,r->ch,underline);
+    return 0;
 }
 static int draw_cursor(BtRenderer *r, const BtPresentation *f, bool focused, bool blink_visible) {
     unsigned col=f->cursor.viewport_x, row=f->cursor.viewport_y;
@@ -459,17 +595,8 @@ static int draw_cursor(BtRenderer *r, const BtPresentation *f, bool focused, boo
                 draw_run_clipped(r,begin,end,row,blink_visible,&box,&foreground);
             begin=end;
         }
-        for(unsigned x=col;x<col+span;++x) {
-            Cell *c=&r->cells[x];
-            if(c->style.invisible) continue;
-            if(c->style.underline) {
-                rect(r,PAD+x*r->cw,box.y+box.h-2,r->cw,1,foreground);
-                if(c->style.underline==GHOSTTY_SGR_UNDERLINE_DOUBLE)
-                    rect(r,PAD+x*r->cw,box.y+box.h-4,r->cw,1,foreground);
-            }
-            if(c->style.strikethrough) rect(r,PAD+x*r->cw,box.y+r->ascent*.65f,r->cw,1,foreground);
-            if(c->style.overline) rect(r,PAD+x*r->cw,box.y,r->cw,1,foreground);
-        }
+        for(unsigned x=col;x<col+span;++x)
+            decorations(r,x,row,&r->cells[x],blink_visible,&foreground);
     } else {
         rect(r,box.x,box.y,box.w,1,color); rect(r,box.x,box.y+box.h-1,box.w,1,color);
         rect(r,box.x,box.y,1,box.h,color); rect(r,box.x+box.w-1,box.y,1,box.h,color);
@@ -478,7 +605,20 @@ static int draw_cursor(BtRenderer *r, const BtPresentation *f, bool focused, boo
 }
 static int draw_frame(BtRenderer *r, const BtPresentation *f, bool focused, bool blink_visible) {
     SDL_GL_GetDrawableSize(r->window,&r->width,&r->height);
-    glViewport(0,0,r->width,r->height);
+    int surface_height=r->height;
+    r->origin_x=0; r->origin_y=0; r->viewport_width=r->width; r->viewport_height=r->height;
+    if(r->composite) {
+        r->origin_x=r->region.x;
+        r->origin_y=surface_height-r->region.y-r->region.h;
+        r->viewport_width=r->region.w; r->viewport_height=r->region.h;
+        if(r->scale_region) {
+            r->width=(int)((uint64_t)f->cols*f->cell_width+2*PAD);
+            r->height=(int)((uint64_t)f->rows*f->cell_height+2*PAD);
+        } else { r->width=r->region.w; r->height=r->region.h; }
+    }
+    glViewport(r->origin_x,r->origin_y,r->viewport_width,r->viewport_height);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(r->origin_x,r->origin_y,r->viewport_width,r->viewport_height);
     text_state(r);
     GhosttyRenderStateColors colors=f->colors;
     glClearColor(colors.background.r/255.f,colors.background.g/255.f,colors.background.b/255.f,1);
@@ -495,26 +635,21 @@ static int draw_frame(BtRenderer *r, const BtPresentation *f, bool focused, bool
             draw_run(r,begin,end,y,blink_visible);
             begin=end;
         }
-        for(unsigned x=0;x<f->cols;++x) {
-            Cell *c=&r->cells[x];
-            if (c->style.invisible) continue;
-            if (c->style.underline) {
-                rect(r,PAD+x*r->cw,PAD+(y+1)*r->ch-2,r->cw,1,c->underline);
-                if(c->style.underline==GHOSTTY_SGR_UNDERLINE_DOUBLE) rect(r,PAD+x*r->cw,PAD+(y+1)*r->ch-4,r->cw,1,c->underline);
-            }
-            if(c->style.strikethrough) rect(r,PAD+x*r->cw,PAD+y*r->ch+r->ascent*.65f,r->cw,1,c->fg);
-            if(c->style.overline) rect(r,PAD+x*r->cw,PAD+y*r->ch,r->cw,1,c->fg);
-        }
+        for(unsigned x=0;x<f->cols;++x)
+            decorations(r,x,y,&r->cells[x],blink_visible,NULL);
     }
     if(image_pass(r,f,2)) return -1;
+    if(focused && draw_preedit(r,f)) return -1;
     GhosttyRenderStateCursor cursor=f->cursor;
     r->animated|=cursor.blinking && cursor.visible && focused;
-    if(cursor.visible && cursor.viewport_has_value && (!cursor.blinking || blink_visible || !focused)) {
+    if(!(focused && r->preedit[0]) && cursor.visible && cursor.viewport_has_value &&
+       (!cursor.blinking || blink_visible || !focused)) {
         if(draw_cursor(r,f,focused,blink_visible)) return -1;
     }
     flush(r);
+    glDisable(GL_SCISSOR_TEST);
     if(glGetError()!=GL_NO_ERROR) return error(r,"OpenGL rendering failed");
-    if(!r->capture_mode) SDL_GL_SwapWindow(r->window);
+    if(!r->capture_mode && !r->composite) SDL_GL_SwapWindow(r->window);
     if(!r->error[0]) ++r->frames;
     return r->error[0]?-1:0;
 }
@@ -563,6 +698,22 @@ int bt_renderer_draw(BtRenderer *r, BtSession *s, bool force, bool focused) {
     }
     return result;
 }
+static int draw_region(BtRenderer *r, BtSession *s, SDL_Rect region, bool focused, bool scaled) {
+    int width,height; SDL_GL_GetDrawableSize(r->window,&width,&height);
+    if(region.x<0 || region.y<0 || region.w<1 || region.h<1 ||
+       region.w>width || region.h>height || region.x>width-region.w || region.y>height-region.h)
+        return error(r,"Terminal view is outside its window surface");
+    r->region=region; r->composite=true; r->scale_region=scaled;
+    int result=bt_renderer_draw(r,s,true,focused);
+    r->composite=false; r->scale_region=false;
+    return result;
+}
+int bt_renderer_draw_region(BtRenderer *r, BtSession *s, SDL_Rect region, bool focused) {
+    return draw_region(r,s,region,focused,false);
+}
+int bt_renderer_draw_region_scaled(BtRenderer *r, BtSession *s, SDL_Rect region, bool focused) {
+    return draw_region(r,s,region,focused,true);
+}
 int bt_renderer_capture(BtRenderer *r, const char *path) {
     if(!r->last_session) return error(r,"Render a frame before capturing it");
     /* Capture a freshly drawn back buffer; contents after a swap are undefined. */
@@ -605,7 +756,14 @@ void bt_renderer_free(BtRenderer *r) {
         if(r->texture) glDeleteTextures(1,&r->texture);
         if(r->vbo) glDeleteBuffers(1,&r->vbo);
         if(r->vao) glDeleteVertexArrays(1,&r->vao);
-        SDL_GL_DeleteContext(r->context);
+        if(r->owns_context) SDL_GL_DeleteContext(r->context);
     }
     free(r->cells); free(r->codepoints); free(r);
+}
+
+BtImageStats bt_renderer_image_stats(BtRenderer *r) { return bt_images_stats(r->images); }
+int bt_renderer_drop_image_cache(BtRenderer *r) {
+    if(SDL_GL_MakeCurrent(r->window,r->context)) return error(r,SDL_GetError());
+    bt_images_reset(r->images);
+    return glGetError()==GL_NO_ERROR?0:error(r,"Could not release image cache");
 }

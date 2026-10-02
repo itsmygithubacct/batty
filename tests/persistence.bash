@@ -3,7 +3,7 @@
 set -euo pipefail
 enable -f "$PWD/build/batty.so" batty
 : "${BATTY_BASH:?tests/run.py must select the verified bash-os runtime}"
-private=${BATTY_TEST_SESSION_DIR:-$(mktemp -d /tmp/bt-cli-XXXXXX)}
+private=${BATTY_TEST_SESSION_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/bt-cli-XXXXXX")}
 export BATTY_SESSION_DIR=$private
 export BATTY_CONFIG=$private/empty.bash
 : > "$BATTY_CONFIG"

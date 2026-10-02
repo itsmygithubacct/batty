@@ -1,0 +1,14 @@
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -641,8 +641,9 @@
+                        debug=False, audio=None, piped=False):
+         """Publish into MediaMTX over loopback RTSP (E2: WebRTC tier). MediaMTX
+         re-serves it as WHEP/WebRTC to browsers with sub-500 ms latency.
+-        WebRTC cannot carry the AAC used by HLS and MSE, so use Opus here."""
+-        argv = self._enc_argv(f"rtsp-{n}", n, w, h, fps, 2.0, debug, audio,
++        WebRTC cannot carry the AAC used by HLS and MSE, so use Opus here.
++        A one-second GOP bounds the wait for a new viewer's first keyframe."""
++        argv = self._enc_argv(f"rtsp-{n}", n, w, h, fps, 1.0, debug, audio,
+                               piped)
+         if audio:
+             codec = argv.index("-c:a")

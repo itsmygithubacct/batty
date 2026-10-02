@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/itsmygithubacct/kilix-state.git",
+  "revision": "33b88c9ff7cd89c2f768d279eeeacecbcd33f73f",
+  "files": {
+    "LICENSE": "938e0db7e6acd7e99d205863bcbdeda47f5fbd053802519f411dbefe0799071e",
+    "include/kilix_state.h": "bcd87b2e7c2c0dcd0482f5b3e962caff81abad94c2c69b6c38e13dde120548ce",
+    "include/kilix_state_codec.h": "e6477e0fff33f6ae43a81041676ef6e7ae0cd33f4940746c7e13535b4285973a",
+    "python/src/kilix_state/__init__.py": "18573d39a7dc332938567f6ff92319822667f7f1c13a09848db5fd33ba741d2d",
+    "python/src/kilix_state/_native.py": "e233d2896810d4328f04b0a239dc7559b7b8c1351fb6a58ae76dee01d99566a8",
+    "python/src/kilix_state/py.typed": "07f3eec33b39a1fd6caa16e437b0e6ba239e15865dfd8dc31fd3922c30f84f03",
+    "python/src/kilix_state/store.py": "951eb99f261fa27ac9f1f25bc4c8c3d7d37b421c168822c630ac9c6103345d09",
+    "src/kilix_state.c": "d00d49881ce1f4122c798d27ef89478d92335c0cb71a73b103d95d4faf8c0b83",
+    "src/kilix_state_codec.c": "446f82c722361960b948e845b77c7f435511b056dac6af18f323f755e5d0de33"
+  }
+}

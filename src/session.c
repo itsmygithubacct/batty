@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "session.h"
 #include "remote.h"
+#include "recovery.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -53,7 +54,7 @@ int bt_session_send(BtSession *s, const void *bytes, size_t len) {
 static void reply(GhosttyTerminal terminal, void *userdata, const uint8_t *bytes, size_t len) {
     (void)terminal;
     BtSession *s = userdata;
-    if (!s->eof) (void)bt_session_send(s, bytes, len);
+    if (!s->eof && !s->restoring) (void)bt_session_send(s, bytes, len);
 }
 static void graphics_reply(void *userdata, const uint8_t *bytes, size_t len) {
     reply(NULL,userdata,bytes,len);
@@ -61,6 +62,63 @@ static void graphics_reply(void *userdata, const uint8_t *bytes, size_t len) {
 static void title(GhosttyTerminal terminal, void *userdata) {
     (void)terminal;
     ((BtSession *)userdata)->title_changed = true;
+}
+void bt_session_clipboard_clear(BtSession *s) {
+    free(s->clipboard); s->clipboard=NULL; s->clipboard_length=0;
+}
+int bt_session_clipboard_policy(BtSession *s, bool enabled) {
+    bool changed=s->clipboard_enabled!=enabled;
+    if(!enabled) { bt_session_clipboard_clear(s); s->clipboard_enabled=false; }
+    if(!changed) return 0;
+    if(s->remote) {
+        int rc=bt_remote_clipboard_policy(s,enabled);
+        /* Revocation applies locally before queued policy delivery or any
+         * synchronous drain. It also remains effective on request failure. */
+        if(!enabled) bt_session_clipboard_clear(s);
+        if(rc) return -1;
+    }
+    s->clipboard_enabled=enabled; return 0;
+}
+static bool utf8_text(const unsigned char *text, size_t size) {
+    for(size_t i=0;i<size;) {
+        unsigned c=text[i++],need=0,min=0;
+        if(c<128) { if(!c) return false; continue; }
+        if(c>=0xc2 && c<=0xdf) { c&=31; need=1; min=0x80; }
+        else if(c>=0xe0 && c<=0xef) { c&=15; need=2; min=0x800; }
+        else if(c>=0xf0 && c<=0xf4) { c&=7; need=3; min=0x10000; }
+        else return false;
+        if(need>size-i) return false;
+        while(need--) { unsigned next=text[i++]; if((next&0xc0)!=0x80) return false; c=(c<<6)|(next&63); }
+        if(c<min || c>0x10ffff || (c>=0xd800 && c<=0xdfff)) return false;
+    }
+    return true;
+}
+static void clipboard_write(GhosttyTerminal terminal, void *userdata, const GhosttyClipboardWrite *write) {
+    (void)terminal;
+    BtSession *s=userdata;
+    if(write->size<sizeof(*write)) return;
+    GhosttyClipboardWriteReply result=GHOSTTY_INIT_SIZED(GhosttyClipboardWriteReply);
+    result.result=GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED;
+    if(!s->clipboard_enabled || s->restoring) goto answer;
+    result.result=GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+    if(write->location!=GHOSTTY_CLIPBOARD_LOCATION_STANDARD || write->contents_len>1) goto answer;
+    const char *text=""; size_t size=0;
+    if(write->contents_len) {
+        const GhosttyClipboardContent *content=&write->contents[0];
+        if(content->mime.len!=10 || memcmp(content->mime.ptr,"text/plain",10)) goto answer;
+        text=(const char *)content->data.ptr; size=content->data.len;
+    }
+    result.result=GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA;
+    if(size>BT_CLIPBOARD_LIMIT || !utf8_text((const unsigned char *)text,size)) goto answer;
+    char *copy=malloc(size+1);
+    result.result=GHOSTTY_CLIPBOARD_WRITE_RESULT_IO_ERROR;
+    if(!copy) goto answer;
+    if(size) memcpy(copy,text,size);
+    copy[size]=0;
+    bt_session_clipboard_clear(s); s->clipboard=copy; s->clipboard_length=size;
+    result.result=GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+answer:
+    write->reply(write,&result);
 }
 static bool size_query(GhosttyTerminal terminal, void *userdata, GhosttySizeReportSize *out) {
     (void)terminal;
@@ -159,8 +217,18 @@ int bt_session_open(BtSession *s, const char *helper, char *const argv[], char *
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, s);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void *)reply);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, (const void *)title);
+    ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, (const void *)clipboard_write);
+    size_t clipboard_limit=BT_CLIPBOARD_LIMIT;
+    ghostty_terminal_set(s->terminal,GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES,&clipboard_limit);
     ghostty_terminal_set(s->terminal, GHOSTTY_TERMINAL_OPT_SIZE, (const void *)size_query);
     if (bt_session_resize(s, cols, rows, cw, ch)) return -1;
+    for(unsigned i=0;env && env[i];++i) {
+        const char prefix[]="BATTY_RECOVERY_FILE=";
+        if(!strncmp(env[i],prefix,sizeof(prefix)-1) && env[i][sizeof(prefix)-1]) {
+            if(bt_recovery_load(s,env[i]+sizeof(prefix)-1)) return fail(s,"restore saved output",errno);
+            break;
+        }
+    }
     int slave = -1, status_pipe[2] = {-1,-1}, control_pipe[2] = {-1,-1};
     int high[4] = {-1,-1,-1,-1}, error = 0;
     struct winsize ws = {.ws_col=cols, .ws_row=rows,
@@ -201,13 +269,60 @@ cleanup:
     }
     if (s->exec_error) return fail(s, argv[0], s->exec_error);
     if (!s->ready) return fail(s, "exec startup timeout", ETIMEDOUT);
+    s->recorder=bt_recorder_open(helper,env,s->child,argv);
+    if(!s->recorder) s->recorder_error=errno;
     return 0;
 }
 
+unsigned bt_session_recording(const BtSession *s) {
+    if(s->remote) return s->remote_recording;
+    if(s->recorder_error || (s->recorder && s->recorder->error)) return BT_RECORD_FAILED;
+    if(!s->recorder) return BT_RECORD_DISABLED;
+    if(s->recorder->complete) return BT_RECORD_COMPLETE;
+    return s->recorder->ending?BT_RECORD_FINISHING:BT_RECORD_ACTIVE;
+}
+const char *bt_session_transcript_id(const BtSession *s) {
+    if(s->remote) return s->remote_transcript_id[0]?s->remote_transcript_id:NULL;
+    return s->recorder && s->recorder->name[0]?s->recorder->name:NULL;
+}
+const char *bt_session_transcript_directory(const BtSession *s) {
+    if(s->remote) return s->remote_transcript_directory;
+    return s->recorder && s->recorder->name[0]?s->recorder->directory:NULL;
+}
 void bt_session_feed(BtSession *s, const void *bytes, size_t length) {
+    if(length) s->graphics_next_tick=0;
+    bt_recorder_write(s->recorder,bytes,length);
     bt_graphics_feed(s->graphics,bytes,length);
 }
+int bt_session_reset(BtSession *s) {
+    if(s->remote) return bt_remote_reset(s);
+    if(!s->terminal) return fail(s,"reset terminal",ENOTCONN);
+    BtGraphics *graphics=bt_graphics_new(s->terminal);
+    if(!graphics) return fail(s,"reset graphics decoder",ENOMEM);
+    bt_graphics_set_reply(graphics,graphics_reply,s);
+    bt_graphics_resize(graphics,s->cols,s->rows,s->cell_width,s->cell_height);
+    bt_graphics_free(s->graphics); s->graphics=graphics;
+    ghostty_terminal_reset(s->terminal);
+    s->graphics_next_tick=0; ++s->graphics_revision; s->title_changed=true;
+    return 0;
+}
+static int tick_graphics(BtSession *s) {
+    GhosttyKittyGraphics storage=NULL;
+    uint64_t before=0, after=0, delay=UINT64_MAX;
+    uint64_t now=bt_millis();
+    if(now<s->graphics_next_tick) return 0;
+    if(ghostty_terminal_get(s->terminal,GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,&storage)!=GHOSTTY_SUCCESS ||
+       ghostty_kitty_graphics_get(storage,GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,&before)!=GHOSTTY_SUCCESS ||
+       ghostty_kitty_graphics_animation_tick(s->terminal,now,&delay)!=GHOSTTY_SUCCESS ||
+       ghostty_terminal_get(s->terminal,GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,&storage)!=GHOSTTY_SUCCESS ||
+       ghostty_kitty_graphics_get(storage,GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,&after)!=GHOSTTY_SUCCESS)
+        return fail(s,"advance Kitty animation",EIO);
+    if(before!=after) ++s->graphics_revision;
+    s->graphics_next_tick=delay==UINT64_MAX || delay>UINT64_MAX-now?UINT64_MAX:now+delay;
+    return 0;
+}
 int bt_session_pump(BtSession *s, int timeout_ms) {
+    bt_recorder_pump(NULL,false);
     if (s->remote) return bt_remote_pump(s,timeout_ms);
     if (s->error[0]) return -1;
     struct pollfd fds[] = {
@@ -245,6 +360,8 @@ int bt_session_pump(BtSession *s, int timeout_ms) {
         else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
         else return fail(s, "read PTY", errno);
     }
+    if(tick_graphics(s)) return -1;
+    bt_recorder_pump(s->recorder,s->eof);
     if (s->exited && s->eof) s->done = true;
     return 0;
 }
@@ -273,6 +390,10 @@ char *bt_session_text(BtSession *s, bool selection, size_t *length) {
     return out;
 }
 void bt_session_close(BtSession *s) {
+    free(s->recovery_arguments); s->recovery_arguments=NULL;
+    free(s->recovery_argv); s->recovery_argv=NULL;
+    bt_session_clipboard_clear(s);
+    bt_recorder_close(s->recorder); s->recorder=NULL;
     if (s->remote) { bt_remote_close(s); return; }
     if (s->control >= 0) { close(s->control); s->control = -1; }
     if (s->master >= 0) { close(s->master); s->master = -1; }

@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Narrow adapter for Kilix desktop clients that invoke kitten @ launch.
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+if [ "${1:-}" != '@' ]; then
+    printf '%s\n' 'batty-kitten supports only @ launch' >&2
+    exit 2
+fi
+shift
+case ${1:-} in
+    --password-file)
+        [ "$#" -ge 2 ] || { printf '%s\n' 'Missing --password-file value' >&2; exit 2; }
+        shift 2 ;;
+    --password-file=*) shift ;;
+esac
+if [ "${1:-}" != launch ]; then
+    printf '%s\n' 'batty-kitten supports only @ launch' >&2
+    exit 2
+fi
+shift
+exec "$root/kilix" launch "$@"

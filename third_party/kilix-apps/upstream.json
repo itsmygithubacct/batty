@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/itsmygithubacct/kilix.git",
+  "revision": "f8660a6e221b222f7f7cf42ad73ca0d0a53e4beb",
+  "files": {
+    "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "config/apprun.py": "7dbff58b75bbf162ea77659bb354f5bf55cf1c54fc7dddaad420af8e46cbb4c9",
+    "config/app_profiles.py": "dc87950c0725c347add513524202d1507afda370b7b3c7d8abaed8a6ddc5a839",
+    "config/browse.py": "a0119e3603ab80c31bbbe9f9d8dd78f0f30142030d3e82d5b4d2158105292355",
+    "config/gfx.py": "813d3f92015011843262f4f392ea5ee7e2d4d702fd32047bd53182b7bf464cbd",
+    "config/stream.py": "37174f7a176664e3d07eeae5b28d9bf5456f017a0ebd1e77dfc82f64d1875266",
+    "config/xcapture.py": "d8ba0f678aa2da796153830242399fc0695e80c521f3048cad4552a8623ee491",
+    "config/xinject.py": "bf7da3aa6fb9c9c101f5555af9f576e555db4bb6d563e77af08d605803c2fd6f",
+    "config/wsbridge.py": "ba85a78dac55b3346c44a75e569c2e0202622402b40ddb23de07c0d53c6d6e0a",
+    "config/kilix_sdk/__init__.py": "2c3c3c6fc4b4d1125e0226d85a99a896083e318f321e8b656c48fde1bdddb482",
+    "config/kilix_sdk/xapp.py": "cf279078ddfe231774dcc42b7e77142d02d0a2a80f7c4e8b49a5c9fe8b6a7f6b",
+    "config/kilix_sdk/xdgapps.py": "b4561ab82cfe9b45209f265c79810ebb09d5261c8b01bf83b586e80ea68fd648"
+  },
+  "patches": [
+    {
+      "path": "third_party/kilix-apps/patches/0001-resize-frame.patch",
+      "sha256": "8ee326ae3ca8e9c7b0ef812a670a4e8f8608b08daa47a11306e029ebe7d6052a"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0002-tls-connect-links.patch",
+      "sha256": "68a3b6c63e4528edc839b0ae0de648e28271cf6c2d01bdf3656b86c1e81f0ce4"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0003-webrtc-auth.patch",
+      "sha256": "35440679b5314dbc52f69cbf009cd1bdca6136cde0d124e485107826ec1f4b13"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0004-mediamtx-pin.patch",
+      "sha256": "5d75ccdad3a002e90aed925c7ac57ff276e19a00d5f12800c95fdcb02d28a807"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0005-webrtc-lan-tls.patch",
+      "sha256": "895e2ec6939ed9a049978bf5c02d4b1fbff65ff4e3815ac0ede3acbec4a3abe3"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0006-vaapi-device-probe.patch",
+      "sha256": "1716fdf004949a6e7dea8d5def5bb53994e4118ce24cc84a2643d2651058a6d8"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0007-webrtc-opus.patch",
+      "sha256": "49405bc05432392627ab055af38bbbb260137c6ced012ab84643358783e80723"
+    },
+    {
+      "path": "third_party/kilix-apps/patches/0008-webrtc-keyframe-interval.patch",
+      "sha256": "d8bc5d3ffd64abc0641f19c4e0bdc8f777b25e9a172ac3720698ce21cc477a14"
+    }
+  ],
+  "patched_files": {
+    "config/apprun.py": "32f17f555ad93ed3105e8036e5c0c7b2f8d949ea3b8a8dfd6c1a1ecc6dd1eaf7",
+    "config/stream.py": "50617d0aa852253070906a52ed08e7318dd668b06776bf88369fa845ad32a1f6"
+  }
+}

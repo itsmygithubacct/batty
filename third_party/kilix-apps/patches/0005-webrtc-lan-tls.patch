@@ -1,0 +1,84 @@
+--- a/config/apprun.py
++++ b/config/apprun.py
+@@ -527,14 +527,14 @@
+         what = f"run {os.path.basename(self.cmd[0])}"
+         need_bridge = self.lan or self.hls or self.mse
+         hlsdir = ts_port = None
++        tls = self.sup.tls_cert() if self.lan else None
++        self.tls_fp = tls[2] if tls else None
+         if need_bridge:
+             self.http_port = stream.free_port()
+             if self.hls:
+                 hlsdir = os.path.join(self.sup.runtime_dir, "hls")
+             if self.mse:
+                 ts_port = stream.free_port()
+-            tls = self.sup.tls_cert() if self.lan else None
+-            self.tls_fp = tls[2] if tls else None
+             self.sup.start_bridge(rfb_port=self.rfb_port,
+                                   http_port=self.http_port, token=self.token,
+                                   hlsdir=hlsdir, ts_port=ts_port, tls=tls,
+@@ -560,7 +560,7 @@
+                                 else stream.free_port())
+             self.sup.start_mediamtx(rtsp_port=self.rtsp_port,
+                                     webrtc_port=self.webrtc_port,
+-                                    token=self.token, lan=self.lan)
++                                    token=self.token, lan=self.lan, tls=tls)
+             p = self.sup.start_rtsp_pub(n, w, h, self.rtsp_port, fps=fps,
+                                         debug=self.debug, audio=monitor,
+                                         piped=piped)
+@@ -657,7 +657,8 @@
+                     if self.hls:
+                         f.write(f"hls        {base}/hls/live.m3u8?t={self.token}\n")
+                 if self.webrtc_port:
+-                    f.write(f"webrtc     http://127.0.0.1:{self.webrtc_port}"
++                    scheme = "https" if self.lan else "http"
++                    f.write(f"webrtc     {scheme}://127.0.0.1:{self.webrtc_port}"
+                             f"/kilix  (user kilix, pass = token)\n"
+                             f"token      {self.token}\n")
+         except OSError:
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -698,10 +698,12 @@
+         return exe
+ 
+     def start_mediamtx(self, *, rtsp_port, webrtc_port, token, lan=False,
+-                       path="kilix"):
++                       tls=None, path="kilix"):
+         """MediaMTX with RTSP ingest on loopback and a WebRTC (WHEP + built-in
+         web player) read side. Loopback publisher needs no credentials; readers
+         authenticate as kilix/<token> (HTTP basic auth in the browser)."""
++        if lan and not tls:
++            raise RuntimeError("kilix: LAN WebRTC requires TLS")
+         exe = self.ensure_mediamtx()
+         addr = "" if lan else "127.0.0.1"
+         conf = os.path.join(self.runtime_dir, "mediamtx.yml")
+@@ -721,6 +723,9 @@
+ srt: no
+ webrtc: yes
+ webrtcAddress: {addr}:{webrtc_port}
++webrtcEncryption: {'yes' if tls else 'no'}
++webrtcServerKey: {json.dumps(tls[1]) if tls else "''"}
++webrtcServerCert: {json.dumps(tls[0]) if tls else "''"}
+ webrtcLocalUDPAddress: :{udp_port}
+ authInternalUsers:
+ - user: any
+@@ -873,8 +878,9 @@
+             if have_hls:
+                 w(f"   view (mpv) : mpv {scheme}://localhost:{http_port}/{hls_path}{q}")
+         if webrtc_port:
++            scheme = "https" if tls_fp else "http"
+             w(f"   WebRTC     : ssh -N -L {webrtc_port}:127.0.0.1:{webrtc_port} {user}@{host}")
+-            w(f"                then open  http://localhost:{webrtc_port}/kilix"
++            w(f"                then open  {scheme}://localhost:{webrtc_port}/kilix"
+               f"   (user kilix, password = token below)")
+             if token:
+                 w(f"                token: {token}")
+@@ -884,5 +890,7 @@
+             if tls_fp:
+                 w(f"                accept cert  {tls_fp}")
+         if lan_host and webrtc_port:
+-            w(f"   LAN WebRTC : http://{lan_host}:{webrtc_port}/kilix  (no TLS)")
++            w(f"   LAN WebRTC : https://{lan_host}:{webrtc_port}/kilix")
++            if tls_fp:
++                w(f"                accept cert  {tls_fp}")
+         w("")

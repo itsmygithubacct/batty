@@ -1,0 +1,722 @@
+{
+  "schema_version": 3,
+  "packages": [
+    {
+      "id": "kilix-tui-utils",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-tui-utils",
+        "ref": "b53c2595c38daeb048ce9bcc17afc9aad982c670"
+      },
+      "build": ["make", "runtime"],
+      "dependency_hint": "needs Python 3.11 or newer and make"
+    }
+  ],
+  "content": [
+    {
+      "id": "doom",
+      "label": "Doom",
+      "kind": "game",
+      "icon": "doom",
+      "description": "The official shareware episode, run through DOSBox.",
+      "source": {"type": "custom"},
+      "capabilities": ["dosbox", "x11-app", "audio"],
+      "launch": {"mode": "run", "preferred_size": "640x400"}
+    },
+    {
+      "id": "dosbox",
+      "label": "DOSBox",
+      "kind": "app",
+      "icon": "dosbox",
+      "description": "An MS-DOS prompt hosted in a private Kilix display.",
+      "source": {"type": "custom"},
+      "capabilities": ["x11-app", "audio"],
+      "launch": {"mode": "run", "preferred_size": "640x400"}
+    },
+    {
+      "id": "bashed-earth",
+      "label": "Bashed Earth",
+      "kind": "game",
+      "icon": "tank",
+      "description": "A deterministic terminal artillery game.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/bashed-earth",
+        "ref": "7c3e4dd11dbd434464cbffa6f6f0dc56e7b4334a"
+      },
+      "binary": "bashed-earth",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, and zlib",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-jpak",
+      "label": "Kilix JPAK",
+      "kind": "game",
+      "icon": "kilix-jpak",
+      "description": "A one-hundred-vault action-puzzle game.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-jpak",
+        "ref": "eef3170a9cf0a601a8e87282e5320cbeb0a9e037"
+      },
+      "binary": "kilix-jpak",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-rancher",
+      "label": "Kilix Rancher",
+      "kind": "game",
+      "icon": "rancher",
+      "description": "Raise a fire-kitten and compete in real-time arena battles.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-rancher",
+        "ref": "f7e39a1d73cbf718098174d629d126ea9e306aba"
+      },
+      "binary": "kilix-rancher",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-pong",
+      "label": "Kilix Pong",
+      "kind": "game",
+      "icon": "pong",
+      "description": "A deterministic one-player or local two-player paddle-ball game.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-pong",
+        "ref": "9c92abedbe52aa66cf9f00b07551e6aeac0d7b88"
+      },
+      "binary": "kilix-pong",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-lights",
+      "label": "Kilix Lights",
+      "kind": "game",
+      "icon": "lights",
+      "description": "A full-color Lights Out puzzle in a retro electrical workshop.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-lights",
+        "ref": "506922102ce55794e2096e9afd031688e3de3e94"
+      },
+      "binary": "bin/kilix-lights",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "kitty-mouse", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "super-kilix",
+      "label": "Super Kilix",
+      "kind": "game",
+      "icon": "super-kilix",
+      "description": "An original side-scrolling platformer starring Kilix.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/super-kilix",
+        "ref": "e47f6687fd3056faf4b3fa10d2a21c45de9c60ff"
+      },
+      "binary": "super-kilix",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "joustix",
+      "label": "Joustix",
+      "kind": "game",
+      "icon": "joustix",
+      "description": "A flying-joust arcade game.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/joustix",
+        "ref": "a3b2e3594abdd7a9f67f57678829f697d1f0d387"
+      },
+      "binary": "joustix",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "chess-bash",
+      "label": "Chess Bash",
+      "kind": "game",
+      "icon": "chess-bash",
+      "description": "Animated isometric chess with local audio.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/chess-bash",
+        "ref": "f373d6d68268bbf9fb63ec46d35801600d52acad"
+      },
+      "binary": "chess-bash",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-fishtank",
+      "label": "Kilix Fishtank",
+      "kind": "game",
+      "icon": "fishtank",
+      "description": "An arcade-style virtual aquarium.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-fishtank",
+        "ref": "d037789807fe57c412d2672a1063261391e716b3"
+      },
+      "binary": "kilix-fishtank",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "kitty-mouse", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "terminal-lander",
+      "label": "Kilix Lander",
+      "kind": "game",
+      "icon": "lander",
+      "description": "A Kitty-graphics lunar lander.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-lander",
+        "ref": "758956d0b54f70bc1140f48c9463f5e6a3a115b7"
+      },
+      "binary": "terminal-lander",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kitty-brokeout",
+      "label": "Kilix Brokeout",
+      "kind": "game",
+      "icon": "brokeout",
+      "description": "A Kitty-graphics brick breaker.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-brokeout",
+        "ref": "4143cefa5b417093813a0872d063c87ca816a541"
+      },
+      "binary": "kitty-brokeout",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-land",
+      "label": "Kilix Land",
+      "kind": "game",
+      "icon": "kilix-land",
+      "description": "A cross-game conversation room and training range for the Kilix cast.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-land",
+        "ref": "8fa063d9b4db18019a79282d5b0c106a458ac85b"
+      },
+      "binary": "kilix-land",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, zlib, libm, and pthreads",
+      "capabilities": ["kitty-graphics", "kitty-keyboard", "audio"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-file",
+      "label": "File Manager",
+      "kind": "app",
+      "icon": "folder",
+      "description": "Browse and open files without destructive file operations.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-file",
+      "capabilities": ["filesystem-read", "open-document"],
+      "actions": {
+        "browse": {"description": "Browse files and directories"},
+        "open": {
+          "argv": ["--open"],
+          "accepts_input": true,
+          "description": "Open a document through the shared host dispatcher"
+        }
+      },
+      "accepts": ["inode/directory", "text/plain", "application/pdf", "image/*"],
+      "launch": {"mode": "terminal", "preferred_size": "900x600"}
+    },
+    {
+      "id": "kilix-system-center",
+      "label": "System Center",
+      "kind": "app",
+      "icon": "computer",
+      "description": "CPU, memory, thermal, storage, network, audio, camera, package, and VM tools in one place.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-system-center",
+      "capabilities": ["system-read", "audio-control"],
+      "actions": {
+        "overview": {"argv": ["--action", "overview"]},
+        "cpu": {"argv": ["--action", "cpu"]},
+        "memory": {"argv": ["--action", "memory"]},
+        "thermal": {"argv": ["--action", "thermal"]},
+        "storage": {"argv": ["--action", "storage"]},
+        "network": {"argv": ["--action", "network"]},
+        "audio": {"argv": ["--action", "audio"]},
+        "packages": {"argv": ["--action", "packages"]},
+        "cameras": {"argv": ["--action", "cameras"]},
+        "virtualbox": {"argv": ["--action", "virtualbox"]}
+      },
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "960x640"}
+    },
+    {
+      "id": "kilix-settings-center",
+      "label": "Kilix Settings",
+      "kind": "app",
+      "icon": "settings",
+      "description": "Portable audio, voice, display, desktop, and shared stack settings.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-settings-center",
+      "capabilities": ["settings-write", "audio-control"],
+      "actions": {
+        "overview": {"argv": ["--action", "overview"]},
+        "audio": {"argv": ["--action", "audio"]},
+        "display": {"argv": ["--action", "display"]},
+        "desktop": {"argv": ["--action", "desktop"]},
+        "voice": {"argv": ["--action", "voice"]}
+      },
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "860x600"}
+    },
+    {
+      "id": "kilix-software-center",
+      "label": "Software Center",
+      "kind": "app",
+      "icon": "package",
+      "description": "Browse the shared immutable catalog and install through the Kilix installer.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-software-center",
+      "capabilities": ["network", "software-install", "storage-write"],
+      "actions": {
+        "browse": {"argv": ["--action", "browse"]},
+        "details": {
+          "argv": ["--action", "details"],
+          "accepts_input": true,
+          "description": "Select one catalog ID"
+        },
+        "install": {
+          "argv": ["--action", "install"],
+          "accepts_input": true,
+          "description": "Select one catalog ID and show the confirmation boundary"
+        }
+      },
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "920x620"}
+    },
+    {
+      "id": "kilix-session-center",
+      "label": "Session Center",
+      "kind": "app",
+      "icon": "terminal",
+      "description": "Panes, PTYs, switcher, transcripts, and remote session tools.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-session-center",
+      "capabilities": ["kilix-control", "session-read", "session-write"],
+      "actions": {
+        "overview": {"argv": ["--action", "overview"]},
+        "panes": {"argv": ["--action", "panes"]},
+        "pty": {"argv": ["--action", "pty"]},
+        "logs": {"argv": ["--action", "logs"]},
+        "remote-sessions": {"argv": ["--action", "remote-sessions"]}
+      },
+      "lifecycle": {
+        "single_instance": true,
+        "requires_kilix_session": true,
+        "degrades_inplace": true
+      },
+      "launch": {"mode": "terminal", "preferred_size": "960x640"}
+    },
+    {
+      "id": "kilix-model-store",
+      "label": "Model Store",
+      "kind": "app",
+      "icon": "package",
+      "description": "Browse, install, and manage shared local AI and speech models.",
+      "source": {"type": "system"},
+      "command": ["kilix", "bonsai"],
+      "capabilities": ["network", "model-storage", "storage-write"],
+      "actions": {"browse": {"description": "Open the model catalog"}},
+      "lifecycle": {"single_instance": true, "startup_timeout_seconds": 30},
+      "launch": {"mode": "terminal", "preferred_size": "920x620"}
+    },
+    {
+      "id": "kilix-camera-wall",
+      "label": "Camera Wall",
+      "kind": "app",
+      "icon": "display",
+      "description": "Watch the cameras with what the models make of them, and what happened.",
+      "source": {"type": "system"},
+      "command": ["kilix", "nvr", "view"],
+      "capabilities": ["network", "kitty-graphics"],
+      "actions": {
+        "wall": {"description": "Every configured camera at once"},
+        "camera": {"accepts_input": true, "description": "One camera, with detection"}
+      },
+      "launch": {"mode": "terminal", "preferred_size": "1280x800"}
+    },
+    {
+      "id": "kilix-region-painter",
+      "label": "Region Painter",
+      "kind": "app",
+      "icon": "paint",
+      "description": "Paint and edit image masks with the shared Kilix region tool.",
+      "source": {"type": "system"},
+      "command": ["kilix", "mask"],
+      "capabilities": ["filesystem-read", "filesystem-write", "kitty-graphics"],
+      "actions": {
+        "new": {"description": "Create a new mask"},
+        "open": {"accepts_input": true, "description": "Open an image or mask"}
+      },
+      "accepts": ["image/png", "image/jpeg", "image/webp"],
+      "launch": {"mode": "terminal", "preferred_size": "960x700"}
+    },
+    {
+      "id": "kilix-voice-studio",
+      "label": "Voice Studio",
+      "kind": "app",
+      "icon": "microphone",
+      "description": "Speech tools, shared settings, models, status, and diagnostics.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-voice-studio",
+      "capabilities": ["audio-input", "audio-output", "model-storage", "settings-write"],
+      "actions": {
+        "overview": {"argv": ["--action", "overview"]},
+        "read-aloud": {"argv": ["--action", "read-aloud"]},
+        "dictation": {"argv": ["--action", "dictation"]},
+        "models": {"argv": ["--action", "models"]},
+        "settings": {"argv": ["--action", "settings"]},
+        "status": {"argv": ["--action", "status"]},
+        "doctor": {"argv": ["--action", "doctor"]}
+      },
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "900x620"}
+    },
+    {
+      "id": "kilix-camera-manager",
+      "label": "Camera Manager",
+      "kind": "app",
+      "icon": "camera",
+      "description": "Manage safe camera profiles, groups, mosaics, and viewer launches.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-cameras",
+      "capabilities": ["network", "settings-write"],
+      "actions": {"manage": {"description": "Open camera profiles and groups"}},
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "900x620"}
+    },
+    {
+      "id": "kilix-virtualbox-manager",
+      "label": "VirtualBox Manager",
+      "kind": "app",
+      "icon": "computer",
+      "description": "Discover, launch, focus, and control VirtualBox VPN machines.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-virtualbox-manager",
+      "capabilities": ["virtualization", "kilix-control"],
+      "actions": {
+        "manage": {"description": "Open the machine manager"},
+        "status": {"argv": ["--status"], "description": "Print machine status"},
+        "select": {
+          "argv": ["--vm"],
+          "accepts_input": true,
+          "description": "Preselect a machine name or UUID"
+        }
+      },
+      "lifecycle": {"single_instance": true, "degrades_inplace": true},
+      "launch": {"mode": "terminal", "preferred_size": "960x640"}
+    },
+    {
+      "id": "kilix-weather",
+      "label": "Weather",
+      "kind": "app",
+      "icon": "weather",
+      "description": "Current conditions and forecast from Open-Meteo.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-weather",
+      "capabilities": ["network"],
+      "actions": {"forecast": {"description": "Open the forecast"}},
+      "launch": {"mode": "terminal", "preferred_size": "780x560"}
+    },
+    {
+      "id": "kilix-calculator",
+      "label": "Calculator",
+      "kind": "app",
+      "icon": "calculator",
+      "description": "Safe arithmetic calculator with no arbitrary code evaluation.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-calculator",
+      "actions": {
+        "calculate": {
+          "accepts_input": true,
+          "description": "Evaluate one arithmetic expression and print the result"
+        }
+      },
+      "accepts": ["text/plain"],
+      "launch": {"mode": "terminal", "preferred_size": "640x480"}
+    },
+    {
+      "id": "kilix-music-control",
+      "label": "Music Control",
+      "kind": "app",
+      "icon": "music",
+      "description": "Control Kilix Amp through its local control socket.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-music",
+      "capabilities": ["audio-output", "headless-control"],
+      "actions": {"control": {"description": "Open playback controls"}},
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "760x560"}
+    },
+    {
+      "id": "kilix-chawan",
+      "label": "Chawan Text Browser",
+      "kind": "app",
+      "icon": "web-browser",
+      "description": "Browse web pages in a text-native Kilix surface.",
+      "source": {"type": "system"},
+      "command": ["kilix", "chawan"],
+      "capabilities": ["network", "kilix-control"],
+      "actions": {
+        "browse": {"description": "Open the browser"},
+        "open": {"accepts_input": true, "description": "Open a URL"}
+      },
+      "accepts": ["text/html", "x-scheme-handler/http", "x-scheme-handler/https"],
+      "lifecycle": {"requires_kilix_session": true, "degrades_inplace": true},
+      "launch": {"mode": "terminal", "preferred_size": "960x700"}
+    },
+    {
+      "id": "kilix-rollout-resume",
+      "label": "Coding Session Recovery",
+      "kind": "app",
+      "icon": "terminal",
+      "description": "Recover and manage coding-agent sessions and installations.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-rollout-resume",
+      "capabilities": ["network", "session-read", "software-install"],
+      "actions": {"recover": {"description": "Open session recovery"}},
+      "lifecycle": {"single_instance": true},
+      "launch": {"mode": "terminal", "preferred_size": "960x640"}
+    },
+    {
+      "id": "kilix-character-map",
+      "label": "Character Map",
+      "kind": "app",
+      "icon": "font",
+      "description": "Search Unicode names and codepoints and copy through the terminal clipboard.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-character-map",
+      "capabilities": ["clipboard"],
+      "actions": {
+        "browse": {"description": "Browse useful Unicode blocks"},
+        "find": {
+          "argv": ["--find"],
+          "accepts_input": true,
+          "description": "Find a Unicode name or codepoint"
+        }
+      },
+      "accepts": ["text/plain"],
+      "launch": {"mode": "terminal", "preferred_size": "760x560"}
+    },
+    {
+      "id": "kilix-notepad",
+      "label": "Notepad",
+      "kind": "app",
+      "icon": "text-editor",
+      "description": "Portable UTF-8 editor with atomic saves and guarded discard.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-notepad",
+      "capabilities": ["filesystem-read", "filesystem-write"],
+      "actions": {
+        "new": {"description": "Create a new text document"},
+        "open": {"accepts_input": true, "description": "Open a UTF-8 text document"}
+      },
+      "accepts": ["text/plain", "text/markdown"],
+      "launch": {"mode": "terminal", "preferred_size": "860x620"}
+    },
+    {
+      "id": "kilix-find-files",
+      "label": "Find Files",
+      "kind": "app",
+      "icon": "search",
+      "description": "Bounded filename and glob search without following directory symlinks.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-find-files",
+      "capabilities": ["filesystem-read", "open-document"],
+      "actions": {
+        "find": {
+          "argv": ["--query"],
+          "accepts_input": true,
+          "description": "Search for a filename substring or glob"
+        }
+      },
+      "accepts": ["inode/directory", "text/plain"],
+      "launch": {"mode": "terminal", "preferred_size": "900x620"}
+    },
+    {
+      "id": "kilix-session-log",
+      "label": "Session Log Viewer",
+      "kind": "app",
+      "icon": "text-editor",
+      "description": "Read live and archived Kilix pane transcripts.",
+      "package": "kilix-tui-utils",
+      "binary": ".runtime/bin/kilix-session-log",
+      "capabilities": ["session-read", "filesystem-read"],
+      "actions": {"browse": {"description": "Browse pane transcripts"}},
+      "lifecycle": {"requires_kilix_session": true, "degrades_inplace": true},
+      "launch": {"mode": "terminal", "preferred_size": "900x620"}
+    },
+    {
+      "id": "kilix-amp",
+      "label": "Kilix Amp",
+      "kind": "app",
+      "icon": "amp",
+      "description": "A compact skinnable music player.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-amp",
+        "ref": "2bcb035dadf30b3d619d4fc00e8f84bca8b554f8"
+      },
+      "binary": "kilix-amp",
+      "build": ["make", "all"],
+      "dependency_hint": "needs SDL2, SDL2_image, libsndfile, zlib, and FluidSynth development files",
+      "capabilities": ["x11-app", "audio", "clipboard", "headless-control"],
+      "launch": {"mode": "xpane", "preferred_size": "600x360"}
+    },
+    {
+      "id": "kilix-pdf",
+      "label": "PDF Viewer",
+      "kind": "app",
+      "icon": "doc_text",
+      "description": "View PDFs with retained terminal scrolling and automatic CPU fallbacks.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-pdf",
+        "ref": "20ff247a5956406f71b12f0c365a48aa179a7aa5"
+      },
+      "binary": "kilix-pdf-viewer",
+      "build": ["make", "all"],
+      "dependency_hint": "needs a C compiler, make, Poppler GLib, Cairo, GLib, and zlib development files; Evince is the graphical fallback",
+      "capabilities": ["filesystem-read", "kitty-graphics", "kitty-keyboard", "kitty-mouse"],
+      "actions": {
+        "open": {
+          "accepts_input": true,
+          "description": "Open one PDF"
+        }
+      },
+      "accepts": ["application/pdf"],
+      "lifecycle": {"preserve_on_failure": true},
+      "launch": {"mode": "terminal", "preferred_size": "960x700"}
+    },
+    {
+      "id": "kilix-pdf-conversion",
+      "label": "PDF Conversion",
+      "kind": "app",
+      "icon": "doc_text",
+      "description": "Convert PDFs into validated, self-contained Markdown bundles.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-pdf-conversion",
+        "ref": "07ee29296e1c0c3fc2a8e4899a53c1098e96b05d"
+      },
+      "binary": "kilix-pdf",
+      "build": ["make", "runtime"],
+      "dependency_hint": "needs Python 3.11 or newer, uv, make, and network access for the frozen runtime install",
+      "capabilities": ["network", "filesystem-read", "filesystem-write"],
+      "actions": {
+        "convert": {
+          "accepts_input": true,
+          "description": "Convert one PDF into a validated Markdown bundle"
+        }
+      },
+      "accepts": ["application/pdf"],
+      "lifecycle": {"preserve_on_failure": true},
+      "launch": {"mode": "terminal", "preferred_size": "760x520"}
+    },
+    {
+      "id": "kilix-rtsp",
+      "label": "Camera Viewer",
+      "kind": "app",
+      "icon": "display",
+      "description": "Watch RTSP cameras in the terminal, one filling the screen or several in a grid.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-rtsp",
+        "ref": "336213f814a87265dd02efdfe7d1c90052064ac7"
+      },
+      "binary": "build/kilix-rtsp",
+      "build": ["make", "all"],
+      "dependency_hint": "needs zlib development files to build and the ffmpeg binary at run time",
+      "capabilities": ["network"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-nvr",
+      "label": "Camera Recorder",
+      "kind": "app",
+      "icon": "display",
+      "description": "Records RTSP cameras, finds what moved, and keeps what mattered.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-nvr",
+        "ref": "f61337589bb130e796ead18fd9fca4a8850fae25"
+      },
+      "binary": "build/kilix-nvr",
+      "build": ["make", "all"],
+      "dependency_hint": "needs sqlite3 and zlib development files to build, and the ffmpeg binary at run time",
+      "capabilities": ["network"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-object-detect",
+      "label": "Image Analyzer",
+      "kind": "app",
+      "icon": "display",
+      "description": "What is in a picture, a recording or a camera - and what it sounds like.",
+      "source": {
+        "type": "git",
+        "repository": "https://github.com/itsmygithubacct/kilix-object-detect",
+        "ref": "63b6234b7a30936f8afd4958b450babef6fff6db"
+      },
+      "binary": "build/kilix-look",
+      "build": ["make", "all"],
+      "dependency_hint": "needs zlib development files to build, the ffmpeg binary at run time, and `kilix install yolo` for a model",
+      "capabilities": ["network"],
+      "launch": {"mode": "terminal"}
+    },
+    {
+      "id": "kilix-tmux-manager",
+      "label": "Tmux Sessions",
+      "kind": "app",
+      "icon": "terminal",
+      "description": "Manage tmux sessions, windows, and panes in a text-native surface.",
+      "source": {"type": "system"},
+      "command": ["kilix", "tmux"],
+      "capabilities": ["network", "session-read", "session-write"],
+      "actions": {"manage": {"description": "Open the tmux session manager"}},
+      "lifecycle": {"single_instance": true, "startup_timeout_seconds": 30},
+      "launch": {"mode": "terminal", "preferred_size": "900x620"}
+    }
+  ]
+}

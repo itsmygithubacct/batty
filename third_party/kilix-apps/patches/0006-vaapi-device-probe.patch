@@ -1,0 +1,66 @@
+--- a/config/stream.py
++++ b/config/stream.py
+@@ -226,14 +226,38 @@
+ 
+ 
+ _H264_CACHE = None
++_VAAPI_DEVICE_CACHE = None
++
++
++def _vaapi_device():
++    """Find a render node that can actually encode H.264, not just open VA-API."""
++    global _VAAPI_DEVICE_CACHE
++    if _VAAPI_DEVICE_CACHE is not None:
++        return _VAAPI_DEVICE_CACHE or None
++    for device in sorted(glob.glob("/dev/dri/renderD[0-9]*")):
++        try:
++            result = subprocess.run(
++                ["ffmpeg", "-hide_banner", "-loglevel", "error",
++                 "-vaapi_device", device, "-f", "lavfi", "-i",
++                 "color=size=64x64:rate=1", "-frames:v", "1",
++                 "-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi",
++                 "-f", "null", "-"],
++                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
++        except (OSError, subprocess.TimeoutExpired):
++            continue
++        if result.returncode == 0:
++            _VAAPI_DEVICE_CACHE = device
++            return device
++    _VAAPI_DEVICE_CACHE = ""
++    return None
+ 
+ 
+ def _h264_encoder():
+     """Pick the best available H.264 encoder in this ffmpeg. Returns a 'kind'
+     string: 'x264' | 'openh264' | 'vaapi' | None. Fedora's ffmpeg-free ships no
+     libx264, so we fall back to Cisco OpenH264 (software) or VAAPI (hardware).
+-    KILIX_HW=1 prefers the VAAPI hardware path when a render node exists (frees
+-    the CPU for capture/serve at some quality-per-bit cost). Cached."""
++    KILIX_HW=1 prefers a working VAAPI H.264 encoder (frees the CPU for
++    capture/serve at some quality-per-bit cost). Cached."""
+     global _H264_CACHE
+     if _H264_CACHE is not None:
+         return _H264_CACHE
+@@ -242,8 +266,11 @@
+                              capture_output=True, text=True, timeout=10).stdout
+     except Exception:
+         enc = ""
+-    have_vaapi = "h264_vaapi" in enc and os.path.exists("/dev/dri/renderD128")
+-    if have_vaapi and os.environ.get("KILIX_HW") == "1":
++    check_vaapi = "h264_vaapi" in enc
++    prefer_hardware = os.environ.get("KILIX_HW") == "1"
++    have_software = "libx264" in enc or "libopenh264" in enc
++    have_vaapi = bool(_vaapi_device()) if check_vaapi and (prefer_hardware or not have_software) else False
++    if have_vaapi and prefer_hardware:
+         _H264_CACHE = "vaapi"
+     elif "libx264" in enc:
+         _H264_CACHE = "x264"
+@@ -279,7 +306,7 @@
+     elif kind == "vaapi":                  # hardware encode (frees the CPU)
+         vargs = ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi",
+                  "-qp", "26", "-g", g]
+-        pre = ["-vaapi_device", "/dev/dri/renderD128"]
++        pre = ["-vaapi_device", _VAAPI_DEVICE_CACHE]
+     else:
+         raise RuntimeError("kilix: ffmpeg has no usable H.264 encoder "
+                            "(need libx264, libopenh264, or h264_vaapi)")

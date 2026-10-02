@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/itsmygithubacct/kilix-content.git",
+  "revision": "49db37f35740124d0a77b34ed945ad36b32e05b6",
+  "files": {
+    "LICENSE": "0673817e537c273fead4d9d5407727bc0a5eb9c139f57d0775f599b7732a4522",
+    "src/kilix_content/__init__.py": "e7570db8428871927f661c16dc62296fba89f61d52624c60e808863ea4fd15d0",
+    "src/kilix_content/catalog/__init__.py": "fdd111610d89ff4fb573206a254661d7c654d58d887aa2c8a24127228b584ba8",
+    "src/kilix_content/catalog/plebian.json": "c17ce699862d828a48ee24073752245f5b6ecb7ea1f2baf4cc8906c1a756be41",
+    "src/kilix_content/install.py": "b342cae72e4909ec6014895825a601832296fdb4b45cdff7d5659b30bed64bba",
+    "src/kilix_content/model.py": "e6bea707c48475f7b3cccb86252707cf49c0b48f930840630c41b25219575c7d",
+    "src/kilix_content/py.typed": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+  },
+  "adapted_files": {
+    "src/kilix_content/install.py": "6369141febe2ab6fcce79b7325cbbdeeece2d7a98c2ebbd6275d5f78e5de008c"
+  }
+}

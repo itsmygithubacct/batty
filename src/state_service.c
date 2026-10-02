@@ -4,6 +4,8 @@
 #define _GNU_SOURCE
 #include "remote_internal.h"
 #include "presentation.h"
+#include "recovery.h"
+#include "selection_drag.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -23,23 +25,27 @@
 #define USER_INPUT_LIMIT (7u * 1024u * 1024u)
 typedef struct {
     int fd, role, output_fd;
-    bool output, waiting;
+    bool output, waiting, clipboard_policy;
     uint64_t last_request, deadline, activity;
     BtPacket packet;
 } Peer;
 typedef struct {
     BtSession session;
+    char **argv;
     BtPresenter *presenter;
     GhosttyKeyEncoder keys;
     GhosttyKeyEvent key_event;
     GhosttyMouseEncoder mouse;
     GhosttyMouseEvent mouse_event;
+    BtSelectionDrag selection;
     Peer peers[PEERS];
-    int listener, root, frame_fd, stopping_peer;
+    int listener, root, frame_fd, delta_fd, stopping_peer, clipboard_owner;
+    BtPresentation *current;
+    uint64_t delta_base;
+    size_t delta_size;
     uint64_t epoch, revision, frame_size;
     unsigned frame_cols, frame_rows, frame_cw, frame_ch;
     bool selecting, focused, focus_pending, capture_retry, claimed;
-    uint16_t selection_x, selection_y;
 } Service;
 static volatile sig_atomic_t stopped;
 static void stop_signal(int number) { (void)number; stopped=1; }
@@ -53,6 +59,10 @@ static void scroll(Service *s, int delta, bool bottom) {
     ghostty_terminal_scroll_viewport(s->session.terminal,v);
 }
 static int focus(Service *s, bool focused) {
+    if(!focused) {
+        s->selecting=false;
+        bt_selection_drag_reset(&s->selection);
+    }
     if (s->focused==focused && !s->focus_pending) return 0;
     s->focused=focused;
     s->focus_pending=false;
@@ -75,8 +85,27 @@ static int input_send(Service *s, const void *bytes, size_t length) {
     }
     return bt_session_send(&s->session,bytes,length);
 }
+static int clipboard_policy(Service *s, Peer *peer, bool enabled) {
+    int index=(int)(peer-s->peers), previous=s->clipboard_owner;
+    peer->clipboard_policy=enabled;
+    if(enabled) s->clipboard_owner=index;
+    else if(previous==index) {
+        s->clipboard_owner=-1;
+        for(unsigned i=0;i<PEERS;++i)
+            if(s->peers[i].fd>=0 && s->peers[i].clipboard_policy && (s->peers[i].role==1 || s->peers[i].role==3)) {
+                s->clipboard_owner=(int)i; break;
+            }
+    }
+    if(previous!=s->clipboard_owner) bt_session_clipboard_clear(&s->session);
+    return bt_session_clipboard_policy(&s->session,s->clipboard_owner>=0);
+}
 static void peer_close(Service *s, Peer *p) {
-    if (p->role==1) { (void)focus(s,false); s->selecting=false; }
+    if(p->clipboard_policy) (void)clipboard_policy(s,p,false);
+    if (p->role==1) (void)focus(s,false);
+    if (p->role==1 || p->role==3) {
+        s->selecting=false;
+        bt_selection_drag_reset(&s->selection);
+    }
     if (p->fd>=0) close(p->fd);
     if (p->output_fd>=0) close(p->output_fd);
     memset(p,0,sizeof(*p)); p->fd=p->output_fd=-1;
@@ -84,8 +113,12 @@ static void peer_close(Service *s, Peer *p) {
 static void counts(Service *s, unsigned *controllers, unsigned *observers) {
     *controllers=*observers=0;
     for (unsigned i=0;i<PEERS;++i) if (s->peers[i].fd>=0) {
-        *controllers+=s->peers[i].role==1; *observers+=s->peers[i].role==2;
+        *controllers+=s->peers[i].role==1; *observers+=s->peers[i].role==2 || s->peers[i].role==3;
     }
+}
+static bool input_peer(Service *s) {
+    for (unsigned i=0;i<PEERS;++i) if(s->peers[i].fd>=0 && s->peers[i].role==3) return true;
+    return false;
 }
 static void metadata(Service *s, BtPacket *p) {
     BtSession *t=&s->session;
@@ -94,13 +127,31 @@ static void metadata(Service *s, BtPacket *p) {
     p->child=t->child; p->exit_status=(uint32_t)t->exit_status;
     p->bytes_read=t->bytes_read; p->bytes_written=t->bytes_written;
     p->pending=t->pending_end-t->pending_start;
-    p->state=(t->exited?BT_STATE_EXITED:0)|(t->eof?BT_STATE_EOF:0)|(t->done?BT_STATE_DONE:0);
+    p->state=(t->exited?BT_STATE_EXITED:0)|(t->eof?BT_STATE_EOF:0)|(t->done?BT_STATE_DONE:0)|
+        BT_STATE_CLIPBOARD_SUPPORTED|BT_STATE_DELTA_SUPPORTED|(t->clipboard?BT_STATE_CLIPBOARD_PENDING:0);
+    p->state|=bt_session_recording(t)<<BT_STATE_RECORD_SHIFT;
     counts(s,&p->controllers,&p->observers);
 }
 static void queue(Service *s, Peer *peer, const BtPacket *request, int error, int fd, uint64_t size) {
     uint32_t type=request->type; uint64_t id=request->request;
     bt_wire_packet(&peer->packet,type); peer->packet.request=id;
     metadata(s,&peer->packet);
+    if(type==BT_WIRE_HELLO && s->session.recorder && s->session.recorder->name[0]) {
+        peer->packet.length=32;
+        memcpy(peer->packet.data,s->session.recorder->name,32);
+        const char *directory=s->session.recorder->directory;
+        if(directory) {
+            size_t n=strlen(directory);
+            if(n && n+34<=BT_WIRE_CHUNK) {
+                peer->packet.data[32]=0;
+                memcpy(peer->packet.data+33,directory,n+1);
+                peer->packet.length=(uint32_t)(n+34);
+            }
+        }
+    }
+    if((int)(peer-s->peers)!=s->clipboard_owner &&
+       !(peer->role==2 && s->clipboard_owner>=0 && s->peers[s->clipboard_owner].role==3))
+        peer->packet.state&=~BT_STATE_CLIPBOARD_PENDING;
     peer->packet.error=error; peer->packet.blob_size=size;
     peer->output_fd=fd; peer->output=true; peer->waiting=false;
     peer->deadline=bt_millis()+3000;
@@ -114,33 +165,57 @@ static void flush(Service *s, Peer *p) {
 }
 static int frame(Service *s, bool force) {
     BtPresentation *view=NULL;
+    /* Retain one immutable current snapshot. Unchanged image generations share
+     * the presenter's bounded pixel owners; no per-peer frame history exists. */
     int rc=bt_presenter_capture(s->presenter,s->epoch,s->revision+1,
-        s->session.cell_width,s->session.cell_height,force || s->capture_retry || s->frame_fd<0,&view);
-    if (rc) return rc<0?-1:0;
-    /* Capture consumes render damage. A failed publication must force a new
-     * capture even when no later terminal bytes arrive. */
-    s->capture_retry=true;
-    uint8_t *bytes=NULL; size_t n=0;
-    if (bt_presentation_pack(view,&bytes,&n)) { bt_presentation_free(view); return -1; }
-    int fd=bt_wire_blob(bytes,n), error=errno;
-    free(bytes);
-    if (fd>=0) {
-        if (s->frame_fd>=0) close(s->frame_fd);
-        s->frame_fd=fd; s->frame_size=n; s->revision=view->revision;
-        s->frame_cols=view->cols; s->frame_rows=view->rows;
-        s->frame_cw=view->cell_width; s->frame_ch=view->cell_height;
-        s->capture_retry=false;
+        s->session.cell_width,s->session.cell_height,force || s->capture_retry || !s->current,&view);
+    if(rc) {
+        if(rc<0) s->capture_retry=true;
+        return rc<0?-1:0;
     }
-    bt_presentation_free(view); errno=error;
-    return fd>=0?0:-1;
+    int delta=-1; size_t delta_size=0;
+    if(s->current && view->image_count) {
+        delta=bt_presentation_pack_delta_fd(view,s->current,&delta_size);
+        if(delta<0) {
+            int error=errno; bt_presentation_free(view); s->capture_retry=true; errno=error; return -1;
+        }
+    }
+    if(s->frame_fd>=0) close(s->frame_fd);
+    if(s->delta_fd>=0) close(s->delta_fd);
+    s->frame_fd=-1; s->frame_size=0;
+    s->delta_fd=delta; s->delta_size=delta_size; s->delta_base=s->revision;
+    bt_presentation_free(s->current); s->current=view;
+    s->revision=view->revision;
+    s->frame_cols=view->cols; s->frame_rows=view->rows;
+    s->frame_cw=view->cell_width; s->frame_ch=view->cell_height;
+    s->capture_retry=false;
+    return 0;
 }
 static void frame_reply(Service *s, Peer *peer, const BtPacket *request) {
-    int fd=-1, error=0;
+    int fd=-1, error=0; size_t size=0; bool delta=false;
     if (request->epoch!=s->epoch || request->revision!=s->revision) {
-        fd=fcntl(s->frame_fd,F_DUPFD_CLOEXEC,4);
-        if (fd<0) error=errno;
+        delta=request->type==BT_WIRE_FRAME && (request->state&BT_STATE_DELTA_SUPPORTED) &&
+              request->epoch==s->epoch && request->revision==s->delta_base && s->delta_fd>=0;
+        int source=s->delta_fd;
+        if(!delta) {
+            /* Reconnecting, legacy and lagging clients receive a complete
+             * snapshot. Materialize it once, only when actually requested. */
+            if(s->frame_fd<0) {
+                size_t length=0;
+                s->frame_fd=bt_presentation_pack_fd(s->current,&length);
+                s->frame_size=length;
+            }
+            source=s->frame_fd;
+        }
+        if(source<0) error=errno;
+        else {
+            fd=fcntl(source,F_DUPFD_CLOEXEC,4);
+            if(fd<0) error=errno;
+            else size=delta?s->delta_size:s->frame_size;
+        }
     }
-    queue(s,peer,request,error,fd,fd>=0?s->frame_size:0);
+    queue(s,peer,request,error,fd,size);
+    if(delta && fd>=0) peer->packet.state|=BT_STATE_DELTA_FRAME;
     /* Geometry always describes exactly the supplied/retained frame. */
     peer->packet.cols=s->frame_cols; peer->packet.rows=s->frame_rows;
     peer->packet.cw=s->frame_cw; peer->packet.ch=s->frame_ch;
@@ -162,7 +237,7 @@ static bool utf8(const uint8_t *text, size_t length) {
 }
 static int key_input(Service *s, const BtIntent *in, const void *text, size_t length) {
     if (in->action>GHOSTTY_KEY_ACTION_REPEAT || in->key>GHOSTTY_KEY_PASTE ||
-        in->mods>1023 || in->consumed>1023 || in->codepoint>0x10ffff ||
+        in->mods>1023 || in->consumed>1023 || in->composing>1 || in->codepoint>0x10ffff ||
         (in->codepoint>=0xd800 && in->codepoint<=0xdfff) || length>1024 || !utf8(text,length)) {
         errno=EINVAL; return -1;
     }
@@ -171,7 +246,7 @@ static int key_input(Service *s, const BtIntent *in, const void *text, size_t le
     ghostty_key_event_set_key(s->key_event,in->key);
     ghostty_key_event_set_mods(s->key_event,in->mods);
     ghostty_key_event_set_consumed_mods(s->key_event,in->consumed);
-    ghostty_key_event_set_composing(s->key_event,false);
+    ghostty_key_event_set_composing(s->key_event,in->composing!=0);
     ghostty_key_event_set_unshifted_codepoint(s->key_event,in->codepoint);
     ghostty_key_event_set_utf8(s->key_event,text,length);
     char bytes[8192]; size_t n=0;
@@ -207,14 +282,15 @@ static int pointer_input(Service *s, const BtIntent *in) {
         errno=EINVAL; return -1;
     }
     GhosttyMouseTrackingMode tracking=GHOSTTY_MOUSE_TRACKING_NONE;
-    ghostty_terminal_get(s->session.terminal,GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,&tracking);
+    if (!s->session.eof)
+        ghostty_terminal_get(s->session.terminal,GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,&tracking);
     if (in->type==BT_INTENT_WHEEL) {
         if (in->delta < -20 || in->delta>20) { errno=EINVAL; return -1; }
         if (tracking!=GHOSTTY_MOUSE_TRACKING_NONE && !(in->mods&GHOSTTY_MODS_SHIFT)) {
             BtIntent wheel=*in; wheel.action=GHOSTTY_MOUSE_ACTION_PRESS;
             wheel.button=in->delta>0?GHOSTTY_MOUSE_BUTTON_FOUR:GHOSTTY_MOUSE_BUTTON_FIVE;
             for (int i=0;i<abs(in->delta);++i) if (mouse_input(s,&wheel)) return -1;
-        } else if (mode(s,GHOSTTY_MODE_ALT_SCROLL) &&
+        } else if (!s->session.eof && mode(s,GHOSTTY_MODE_ALT_SCROLL) &&
                    (mode(s,GHOSTTY_MODE_ALT_SCREEN_SAVE)||mode(s,GHOSTTY_MODE_ALT_SCREEN))) {
             BtIntent arrow={.action=GHOSTTY_KEY_ACTION_PRESS,
                 .key=in->delta>0?GHOSTTY_KEY_ARROW_UP:GHOSTTY_KEY_ARROW_DOWN};
@@ -227,21 +303,11 @@ static int pointer_input(Service *s, const BtIntent *in) {
     bool begin=in->button==GHOSTTY_MOUSE_BUTTON_LEFT && in->action==GHOSTTY_MOUSE_ACTION_PRESS;
     bool end=in->button==GHOSTTY_MOUSE_BUTTON_LEFT && in->action==GHOSTTY_MOUSE_ACTION_RELEASE;
     if (!begin && !s->selecting) return 0;
-    int col=in->x/(int)s->session.cell_width, row=in->y/(int)s->session.cell_height;
-    if (col<0) col=0;
-    if (row<0) row=0;
-    if (col>=s->session.cols) col=s->session.cols-1;
-    if (row>=s->session.rows) row=s->session.rows-1;
-    if (begin) { s->selection_x=col; s->selection_y=row; s->selecting=true; }
-    GhosttySelection selected=GHOSTTY_INIT_SIZED(GhosttySelection);
-    selected.start=(GhosttyGridRef)GHOSTTY_INIT_SIZED(GhosttyGridRef);
-    selected.end=(GhosttyGridRef)GHOSTTY_INIT_SIZED(GhosttyGridRef);
-    GhosttyPoint start={.tag=GHOSTTY_POINT_TAG_VIEWPORT,.value.coordinate={s->selection_x,s->selection_y}};
-    GhosttyPoint finish={.tag=GHOSTTY_POINT_TAG_VIEWPORT,.value.coordinate={col,row}};
-    if (ghostty_terminal_grid_ref(s->session.terminal,start,&selected.start)==GHOSTTY_SUCCESS &&
-        ghostty_terminal_grid_ref(s->session.terminal,finish,&selected.end)==GHOSTTY_SUCCESS)
-        ghostty_terminal_set(s->session.terminal,GHOSTTY_TERMINAL_OPT_SELECTION,&selected);
-    if (end) s->selecting=false;
+    int changed=bt_selection_drag_event(&s->selection,s->session.terminal,
+        s->session.cols,s->session.rows,s->session.cell_width,s->session.cell_height,0,
+        in->x,in->y,begin,end,bt_millis());
+    if(changed<0) { errno=ENOMEM; return -1; }
+    s->selecting=!end && s->selection.active;
     return 0;
 }
 static int intent(Service *s, const BtIntent *in, const void *data, size_t length) {
@@ -289,8 +355,10 @@ static void request(Service *s, Peer *peer, const BtPacket *p, int received) {
     if (error) goto finish;
     if (p->type==BT_WIRE_HELLO) {
         unsigned control, observe; counts(s,&control,&observe);
-        if (peer->role || (p->flags!=1 && p->flags!=2)) error=EINVAL;
-        else if ((p->flags==1 && control) || (p->flags==2 && observe>=OBSERVERS)) error=EBUSY;
+        if (peer->role || (p->flags!=1 && p->flags!=2 && p->flags!=3)) error=EINVAL;
+        else if (p->epoch && p->epoch!=s->epoch) error=ESTALE;
+        else if ((p->flags==1 && control) ||
+                 (p->flags!=1 && (observe>=OBSERVERS || (p->flags==3 && input_peer(s))))) error=EBUSY;
         else {
             peer->role=p->flags;
             if (frame(s,true)) { error=errno; peer->role=0; }
@@ -304,10 +372,13 @@ static void request(Service *s, Peer *peer, const BtPacket *p, int received) {
         /* Metadata is available without claiming the controller role. */
     } else if (p->type==BT_WIRE_STOP) {
         unsigned control, observe; counts(s,&control,&observe);
-        if (peer->role==2) error=EPERM;
+        if (peer->role==2 || peer->role==3) error=EPERM;
         else if (p->epoch && p->epoch!=s->epoch) error=ESTALE;
         else if (p->epoch && (s->claimed || control || observe)) error=EBUSY;
-        else { s->stopping_peer=(int)(peer-s->peers); peer->packet=*p; stopped=1; return; }
+        else {
+            if(!p->epoch) bt_recovery_forget(getenv("BATTY_KILIX_RECOVERY_DIR"),s->epoch);
+            s->stopping_peer=(int)(peer-s->peers); peer->packet=*p; stopped=1; return;
+        }
     } else if (!peer->role) error=EACCES;
     else if (p->type==BT_WIRE_FRAME) {
         if (p->flags>100) error=EINVAL;
@@ -324,14 +395,37 @@ static void request(Service *s, Peer *peer, const BtPacket *p, int received) {
             else if (n) { output=bt_wire_blob(text,n); if (output<0) error=errno; else output_size=n; }
             free(text);
         }
-    } else if (peer->role!=1) error=EPERM;
+    } else if(p->type==BT_WIRE_RECOVERY) {
+        uint8_t *archive=NULL; size_t length=0;
+        if(p->flags || frame(s,false) || bt_recovery_capture(&s->session,s->current,s->argv,&archive,&length)) error=errno?errno:EINVAL;
+        else { output=bt_wire_blob(archive,length); if(output<0) error=errno; else output_size=length; }
+        free(archive);
+    } else if (peer->role!=1 && peer->role!=3) error=EPERM;
+    else if(p->type==BT_WIRE_CLIPBOARD) {
+        if((int)(peer-s->peers)!=s->clipboard_owner) error=EPERM;
+        else if(s->session.clipboard) {
+            output_size=s->session.clipboard_length+1;
+            output=bt_wire_blob(s->session.clipboard,output_size);
+            if(output<0) error=errno;
+            else bt_session_clipboard_clear(&s->session);
+        }
+    }
     else if (p->type==BT_WIRE_SEND) {
         if (input_send(s,bytes,p->blob_size)) error=errno;
     } else if (p->type==BT_WIRE_RESIZE) {
         if (bt_session_resize(&s->session,p->cols,p->rows,p->cw,p->ch)) error=errno;
+    } else if (p->type==BT_WIRE_RESET) {
+        if(bt_session_reset(&s->session)) error=errno;
     } else if (p->type==BT_WIRE_INTENT) {
         if (p->length!=sizeof(BtIntent)) error=EINVAL;
-        else { BtIntent in; memcpy(&in,p->data,sizeof(in)); if (intent(s,&in,bytes,p->blob_size)) error=errno; }
+        else {
+            BtIntent in; memcpy(&in,p->data,sizeof(in));
+            if(peer->role==3 && in.type==BT_INTENT_FOCUS) error=EPERM;
+            else if(in.type==BT_INTENT_CLIPBOARD_POLICY && in.focused<=1 && !p->blob_size) {
+                if(clipboard_policy(s,peer,in.focused!=0)) error=errno;
+            }
+            else if (intent(s,&in,bytes,p->blob_size)) error=errno;
+        }
     } else error=EINVAL;
 finish:
     if (bytes) munmap(bytes,p->blob_size);
@@ -377,6 +471,12 @@ static int run(Service *s) {
         int rc=poll(fds,PEERS+3,timeout);
         if (rc<0 && errno!=EINTR) return -1;
         if (bt_session_pump(&s->session,0)) return -1;
+        if(s->selection.active) {
+            int changed=bt_selection_drag_tick(&s->selection,s->session.terminal,
+                s->session.cols,s->session.rows,s->session.cell_width,s->session.cell_height,0,bt_millis());
+            if(changed<0) { errno=ENOMEM; return -1; }
+            s->selecting=s->selection.active;
+        }
         if (s->focus_pending) (void)focus(s,s->focused);
         for (unsigned i=0;i<PEERS;++i) {
             Peer *p=&s->peers[i];
@@ -403,7 +503,8 @@ static int run(Service *s) {
                 if (p->fd<0 || !p->waiting) continue;
                 BtPacket req=p->packet;
                 if (error) queue(s,p,&req,error,-1,0);
-                else if (req.epoch!=s->epoch || req.revision!=s->revision || bt_millis()>=p->deadline)
+                else if (req.epoch!=s->epoch || req.revision!=s->revision || bt_millis()>=p->deadline ||
+                         (p->role==1 && s->session.clipboard))
                     frame_reply(s,p,&req);
             }
         }
@@ -434,7 +535,8 @@ int main(int argc, char **argv) {
     signal(SIGPIPE,SIG_IGN);
     Service *s=calloc(1,sizeof(*s));
     if (!s) return 1;
-    s->listener=s->root=s->frame_fd=s->stopping_peer=-1;
+    s->listener=s->root=s->frame_fd=s->delta_fd=s->stopping_peer=-1;
+    s->clipboard_owner=-1;
     s->session.master=s->session.control=s->session.status=-1;
     for (unsigned i=0;i<PEERS;++i) s->peers[i].fd=s->peers[i].output_fd=-1;
     int error=0; bool owned=false, committed=false;
@@ -465,6 +567,7 @@ int main(int argc, char **argv) {
     if (fstatat(s->root,leaf,&identity,AT_SYMLINK_NOFOLLOW)<0 ||
         fchmodat(s->root,leaf,0600,0)<0 || listen(s->listener,16)<0) { error=errno; goto done; }
     extern char **environ;
+    s->argv=argv+9;
     if (bt_session_open(&s->session,argv[3],argv+9,environ,cols,rows,cw,ch)) { error=errno; goto done; }
     s->presenter=bt_presenter_new(s->session.terminal);
     if (!s->presenter || ghostty_key_encoder_new(NULL,&s->keys)!=GHOSTTY_SUCCESS ||
@@ -480,6 +583,7 @@ done:
      * shutdown. Wait for that supervisor before acknowledging termination. */
     pid_t supervisor=s->session.supervisor;
     bt_presenter_free(s->presenter);
+    bt_selection_drag_reset(&s->selection);
     bt_session_close(&s->session);
     if (supervisor>0) {
         for (;;) {
@@ -510,6 +614,8 @@ done:
     if (s->mouse_event) ghostty_mouse_event_free(s->mouse_event);
     for (unsigned i=0;i<PEERS;++i) { s->peers[i].role=0; peer_close(s,&s->peers[i]); }
     if (s->frame_fd>=0) close(s->frame_fd);
+    if (s->delta_fd>=0) close(s->delta_fd);
+    bt_presentation_free(s->current);
     if (s->root>=0) close(s->root);
     free(s); return error?1:0;
 }

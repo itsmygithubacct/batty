@@ -1,0 +1,33 @@
+--- a/config/apprun.py
++++ b/config/apprun.py
+@@ -995,6 +995,8 @@
+         the tab instead of being rescaled. Fixed-size runs (--size, tiers)
+         keep the old behavior: recompute the GPU-scaled placement only.
+         """
++        previous_frame = self.last_frame
++        restart_capture = False
+         self.term.refresh_size()
+         if self.resizable:
+             t = self.term
+@@ -1015,7 +1017,7 @@
+                     log(f"pane resize -> display {w}x{h}")
+                 else:
+                     self.resizable = False       # degrade to GPU scaling
+-                self._spawn_capture(self.fps)
++                restart_capture = True
+         self.compute_layout()
+         if self.presenter is not None:
+             self.presenter.invalidate()
+@@ -1025,6 +1027,12 @@
+         self.last_frame = None           # force a full re-blit at the new size
+         if self.ffbuf:
+             del self.ffbuf[:]
++        # Initial capture can emit synchronously. Draw it only after clearing
++        # stale placements, or an idle app can remain blank after a resize.
++        if restart_capture:
++            self._spawn_capture(self.fps)
++        elif previous_frame is not None:
++            self._accept_frame(previous_frame)
+ 
+     def run(self):
+         if self.term:

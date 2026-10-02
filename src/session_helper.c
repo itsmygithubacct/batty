@@ -4,6 +4,7 @@
  * The command receives only its terminal on descriptors 0, 1 and 2. */
 #define _GNU_SOURCE
 #include "session.h"
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -29,17 +30,56 @@ static void report(int type, int value) {
     ssize_t n;
     do { n = write(4, &message, sizeof(message)); } while (n < 0 && errno == EINTR);
 }
+static void report_exec_error(int fd, int error) {
+    ssize_t written;
+    do { written = write(fd, &error, sizeof(error)); } while (written < 0 && errno == EINTR);
+}
 static volatile sig_atomic_t stop_requested;
 static void request_stop(int sig) { (void)sig; stop_requested=1; }
 
-/* The subreaper adopts descendants as their immediate parents exit. Signal
- * only our still-unreaped direct children, holding a pidfd across the ancestry
- * check. Numeric session/process-group IDs alone cannot establish ownership. */
+/* Hold a pidfd across the parent check so a recycled numeric PID cannot
+ * redirect a signal. The subreaper adopts descendants as their parents exit. */
+static void signal_child(long id, int sig) {
+    if(id<=1 || id>INT_MAX) return;
+    int pidfd=(int)syscall(SYS_pidfd_open,(pid_t)id,0);
+    if(pidfd<0) return;
+    char path[96];
+    snprintf(path,sizeof(path),"/proc/%ld/status",id);
+    FILE *status=fopen(path,"re");
+    bool owned=false;
+    if(status) {
+        char line[256]; long parent;
+        while(fgets(line,sizeof(line),status))
+            if(sscanf(line,"PPid: %ld",&parent)==1) { owned=parent==(long)getpid(); break; }
+        fclose(status);
+    }
+    if(owned) (void)syscall(SYS_pidfd_send_signal,pidfd,sig,NULL,0);
+    close(pidfd);
+}
+static int scan_proc_children(int sig) {
+    DIR *directory=opendir("/proc");
+    if(!directory) return -1;
+    struct dirent *entry;
+    for(;;) {
+        errno=0;
+        entry=readdir(directory);
+        if(!entry) {
+            int saved=errno;
+            if(closedir(directory)<0) return -1;
+            errno=saved;
+            return saved ? -1 : 0;
+        }
+        char *end;
+        long id=strtol(entry->d_name,&end,10);
+        if(end!=entry->d_name && !*end) signal_child(id,sig);
+    }
+}
+/* Prefer the kernel's direct-child list; some Linux kernels omit it. */
 static int signal_children(int sig) {
     char path[96],buffer[65536];
     snprintf(path,sizeof(path),"/proc/self/task/%ld/children",(long)getpid());
     int fd=open(path,O_RDONLY|O_CLOEXEC);
-    if(fd<0) return -1;
+    if(fd<0) return errno==ENOENT ? scan_proc_children(sig) : -1;
     ssize_t n;
     do { n=read(fd,buffer,sizeof(buffer)-1); } while(n<0 && errno==EINTR);
     int saved=errno; close(fd); errno=saved;
@@ -51,20 +91,7 @@ static int signal_children(int sig) {
         long id=strtol(next,&end,10);
         if(end==next) break;
         next=end;
-        if(id<=1 || id>INT_MAX) continue;
-        int pidfd=(int)syscall(SYS_pidfd_open,(pid_t)id,0);
-        if(pidfd<0) continue;
-        snprintf(path,sizeof(path),"/proc/%ld/status",id);
-        FILE *status=fopen(path,"re");
-        bool owned=false;
-        if(status) {
-            char line[256]; long parent;
-            while(fgets(line,sizeof(line),status))
-                if(sscanf(line,"PPid: %ld",&parent)==1) { owned=parent==(long)getpid(); break; }
-            fclose(status);
-        }
-        if(owned) (void)syscall(SYS_pidfd_send_signal,pidfd,sig,NULL,0);
-        close(pidfd);
+        signal_child(id,sig);
     }
     return 0;
 }
@@ -103,6 +130,7 @@ int main(int argc, char **argv) {
     setenv("TERM_PROGRAM", "batty", 1);
     unsetenv("COLUMNS");
     unsetenv("LINES");
+    unsetenv("BATTY_RECOVERY_FILE");
     int exec_pipe[2];
     if (pipe2(exec_pipe, O_CLOEXEC) < 0) { report(BT_EXEC_ERROR, errno); return 1; }
     pid_t child = fork();
@@ -116,18 +144,18 @@ int main(int argc, char **argv) {
         if (setsid() < 0 || ioctl(3, TIOCSCTTY, 0) < 0 ||
             dup2(3, 0) < 0 || dup2(3, 1) < 0 || dup2(3, 2) < 0) {
             int saved = errno;
-            (void)write(exec_pipe[1], &saved, sizeof(saved));
+            report_exec_error(exec_pipe[1], saved);
             _exit(126);
         }
         if (dup3(exec_pipe[1], 3, O_CLOEXEC) < 0) {
-            int saved=errno; (void)write(exec_pipe[1],&saved,sizeof(saved)); _exit(126);
+            int saved=errno; report_exec_error(exec_pipe[1],saved); _exit(126);
         }
         /* The spawn file actions closed every inherited descriptor above 6;
          * the exec handshake is the only descriptor opened afterwards. */
         for(int fd=4;fd<=exec_pipe[1];++fd) close(fd);
         execvp(argv[1], argv + 1);
         int saved = errno;
-        (void)write(3, &saved, sizeof(saved));
+        report_exec_error(3, saved);
         _exit(saved == ENOENT ? 127 : 126);
     }
     close(3);

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Cursor shape, glyph contrast and presentation transport framebuffer checks. */
+/* Cursor, decoration, glyph contrast and presentation framebuffer checks. */
 #define _GNU_SOURCE
 #include "window.h"
 #include "presentation.h"
@@ -47,6 +47,71 @@ static void pixel(unsigned x,unsigned y,unsigned r,unsigned g,unsigned b,const c
 }
 static void reset(void) {
     feed(reset_sequence);
+}
+static void blink_phase(unsigned phase) {
+    uint64_t deadline=bt_millis()+1800;
+    while((bt_millis()/600%2!=phase || bt_millis()%600>400) && bt_millis()<deadline) SDL_Delay(10);
+    require(bt_millis()<deadline,"reach blink phase");
+}
+static void test_decorations(void) {
+    reset();
+    char command[160];
+    for(unsigned style=0;style<=5;++style) {
+        snprintf(command,sizeof(command),"\033[%u;3H\033[4:%u;58;2;0;255;0m        \033[0m",style+1,style);
+        feed(command);
+    }
+    capture(&window.session,true);
+    unsigned left=PAD+2*cw, span=8*cw;
+    for(unsigned style=0;style<=5;++style) {
+        unsigned bottom=PAD+(style+1)*ch,count=0,levels[512]={0};
+        require(span<=512,"decoration fixture width");
+        for(unsigned x=0;x<span;++x) for(unsigned dy=1;dy<=5;++dy) {
+            size_t at=((size_t)(bottom-dy)*width+left+x)*3;
+            require(pixels[at]==0 && pixels[at+2]==0,"underline keeps its explicit green color");
+            if(pixels[at+1]>250) { ++count; levels[x]|=1u<<dy; }
+            else require(pixels[at+1]==0,"underline gaps retain the background");
+        }
+        if(style==0) require(count==0,"SGR 4:0 disables underlining");
+        if(style==1 || style==2) {
+            require(count==span*(style==1?1:2),"single and double underline line counts");
+            for(unsigned x=0;x<span;++x)
+                require(levels[x]==(style==1?1u<<2:(1u<<2)|(1u<<4)),"single and double underline positions");
+        } else if(style==3) {
+            require(count==span,"curly underline is continuous");
+            bool changed=false;
+            for(unsigned x=1;x<span;++x) changed|=levels[x]!=levels[x-1];
+            require(changed,"curly underline changes height");
+            for(unsigned x=0;x+4<span;++x)
+                require(levels[x]==levels[x+4],"curly phase continues across cell boundaries");
+        } else if(style==4 || style==5) {
+            require(count>0 && count<span,"dotted and dashed underlines contain gaps");
+            unsigned period=style==4?4:6;
+            for(unsigned x=0;x+period<span;++x)
+                require(levels[x]==levels[x+period],"underline pattern continues across cell boundaries");
+            unsigned marks=0;
+            for(unsigned x=0;x<period;++x) marks+=levels[x]!=0;
+            require(marks==(style==4?1:4),"dots and dashes have distinct lengths");
+        }
+    }
+    reset(); feed("\033[4:2;58;5;1m \033[0m"); capture(&window.session,true);
+    /* Palette index 1 is red in the default terminal palette. */
+    size_t at=((size_t)(PAD+3*ch-2)*width+left)*3;
+    require(pixels[at]>pixels[at+1] && pixels[at]>pixels[at+2],"palette underline color");
+    reset(); feed("\033[4:3;58;2;0;255;0m\xe7\x95\x8c\033[0m"); capture(&window.session,true);
+    unsigned tail_ink=0;
+    for(unsigned x=left+cw;x<left+2*cw;++x) for(unsigned dy=2;dy<=4;++dy) {
+        size_t offset=((size_t)(PAD+3*ch-dy)*width+x)*3;
+        tail_ink+=pixels[offset+1]==255 && pixels[offset]==0 && pixels[offset+2]==0;
+    }
+    require(tail_ink==cw,"wide character tail continues the curly underline");
+    reset(); feed("\033[4:3;8m        \033[0m"); capture(&window.session,true);
+    pixel(left,PAD+3*ch-4,0,0,0,"invisible text also hides its decorations");
+    reset(); feed("\033[4:1;5m        \033[0m");
+    for(unsigned phase=0;phase<2;++phase) {
+        blink_phase(phase); capture(&window.session,true);
+        pixel(left,PAD+3*ch-2,phase?0:255,phase?0:255,phase?0:255,"underline follows text blinking");
+    }
+    puts("PASS decorations single, double, curly, dotted, dashed, RGB/palette colors, wide tails and visibility");
 }
 static void test_shapes(void) {
     const struct { const char *mode; unsigned style; } shapes[]={
@@ -136,9 +201,7 @@ static void test_transport(void) {
     decoded->cursor.blinking=true;
     /* Sample safely inside each blink phase, leaving time for the capture. */
     for(unsigned phase=0;phase<2;++phase) {
-        uint64_t deadline=bt_millis()+1800;
-        while((bt_millis()/600%2!=phase || bt_millis()%600>400) && bt_millis()<deadline) SDL_Delay(10);
-        require(bt_millis()<deadline,"reach cursor blink phase");
+        blink_phase(phase);
         capture(&remote,true);
         pixel(PAD+2*cw+cw/2,PAD+2*ch+1,phase?0:255,phase?0:255,phase?0:255,
               "focused cursor alternates blink phases without new terminal output");
@@ -159,6 +222,7 @@ int main(void) {
     cw=window.session.cell_width; ch=window.session.cell_height;
     require(cw>=4 && ch>=8,"cursor font metrics");
     test_shapes();
+    test_decorations();
     test_text("M next",1,false);
     test_text("ffi ->",1,false);
     test_text("e\xcc\x81",1,false);

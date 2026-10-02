@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/itsmygithubacct/kilix-telemetry.git",
+  "revision": "3affc0cc4b9a80517c452470a01e2103d29e9dbf",
+  "files": {
+    "LICENSE": "938e0db7e6acd7e99d205863bcbdeda47f5fbd053802519f411dbefe0799071e",
+    "src/kilix_telemetry/__init__.py": "968f7f96c20c6c46bfbd2a951cf5bc991763b83c38f39607b3451c432ff4b4eb",
+    "src/kilix_telemetry/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+    "src/kilix_telemetry/cli.py": "eb46de707a9a2c6e3bafd6563c8146417456e4c9922dc958c82d984ff4ee3cc6",
+    "src/kilix_telemetry/client.py": "f0a779e20c75312312fda914514d3af164f398b2b08f82dec7e6d060aeeb124e",
+    "src/kilix_telemetry/collect.py": "2818b662dae63fa809ba0ee2226ce597008a68e37421582464f206a320de2dac",
+    "src/kilix_telemetry/daemon.py": "af489bdb8e23f28bef97d5bb08c6e56c195f8b920e0884ec3afafe5c3366d255",
+    "src/kilix_telemetry/model.py": "e976c96a1cc29136aa01006100769e167d40238d9f6d8ec07bfaa5855722dde8",
+    "src/kilix_telemetry/registry.py": "7f58c8955c87e8ed3361c1d913bb9cfbab041e6aebe5ec64468a6c2a5b779b55",
+    "src/kilix_telemetry/ring.py": "9c28a145cd0c1fb203a49e96b4154bf5998ffc9c08de92cbc98395f46e7aa47b"
+  }
+}

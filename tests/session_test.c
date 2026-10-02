@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -32,6 +34,10 @@ static int child(const char *mode) {
     setvbuf(stdout,NULL,_IONBF,0);
     if(!strcmp(mode,"exit3")) return 3;
     if(!strcmp(mode,"exit4")) return 4;
+    if(!strcmp(mode,"record")) {
+        printf("BEFORE\033_Ga=t,f=24,s=1,v=1;AAAA\033\\AFTER\r\n");
+        return 0;
+    }
     if(!strcmp(mode,"query")) {
         raw(); printf("\033[2;4H\033[6n");
         char answer[6]; size_t pos=0;
@@ -129,15 +135,89 @@ static int fd_count(void) {
     DIR *d=opendir("/proc/self/fd"); require(d!=NULL,"open FD directory");
     int count=0; while(readdir(d)) ++count; closedir(d); return count;
 }
+static void recording_tests(void) {
+    char root[PATH_MAX-128],path[PATH_MAX];
+    const char *tmp=getenv("TMPDIR");
+    if(!tmp || !*tmp) tmp="/tmp";
+    require(snprintf(root,sizeof(root),"%s/batty-recording-test-XXXXXX",tmp)<(int)sizeof(root),
+            "bounded transcript test directory");
+    require(mkdtemp(root)!=NULL,"private transcript directory");
+    require(!setenv("BATTY_TRANSCRIPT_DIR",root,1),"recording environment");
+    BtSession s;
+    open_session(&s,"record",80,24); done(&s,0);
+    require(s.recorder && !s.recorder_error,"recorder started");
+    uint64_t deadline=bt_millis()+3000;
+    while(!s.recorder->complete && !s.recorder->error && bt_millis()<deadline)
+        require(!bt_session_pump(&s,5),s.error);
+    require(s.recorder->complete && !s.recorder->error,"worker acknowledges durable completion");
+    snprintf(path,sizeof(path),"%s/%s.log",root,s.recorder->name);
+    FILE *file=fopen(path,"rb"); require(file!=NULL,"recorded PTY output exists");
+    char data[1024]={0}; size_t length=fread(data,1,sizeof(data)-1,file);
+    require(!ferror(file) && length>0,"read transcript"); fclose(file);
+    require(strstr(data,"BEFORE") && strstr(data,"AFTER") && strstr(data,"elided") && !strstr(data,"AAAA"),
+            "live transcript preserves text and elides graphics payload");
+    require(contains(&s,"BEFOREAFTER"),"recording leaves terminal parser output unchanged");
+    bt_session_close(&s);
+    require(!unlink(path),"remove completed transcript");
+    strcpy(path+strlen(path)-4,".meta"); require(!unlink(path),"remove completed metadata");
+
+    require(!chmod(root,0755),"make invalid transcript destination");
+    open_session(&s,"query",80,24); done(&s,7);
+    deadline=bt_millis()+3000;
+    while(!s.recorder->error && bt_millis()<deadline) require(!bt_session_pump(&s,5),s.error);
+    require(s.recorder->error && !s.error[0] && contains(&s,"REPLY_OK"),"disk worker failure preserves PTY query and exit status");
+    bt_session_close(&s); require(!chmod(root,0700),"restore private directory");
+
+    open_session(&s,"flood",80,24);
+    require(s.recorder && !s.recorder->error,"flood recorder started");
+    pid_t worker=s.recorder->worker;
+    require(!kill(worker,SIGSTOP),"stop owned transcript worker");
+    int status;
+    require(waitpid(worker,&status,WUNTRACED)==worker && WIFSTOPPED(status),"worker confirmed stopped");
+    deadline=bt_millis()+3000;
+    while(!s.recorder->error && bt_millis()<deadline) require(!bt_session_pump(&s,1),s.error);
+    require(s.recorder->error==EAGAIN || s.recorder->error==EWOULDBLOCK,"bounded recording channel reports overflow");
+    uint64_t accepted=s.recorder->bytes;
+    require(accepted>0 && accepted<2u*1024u*1024u,"bounded accepted recording bytes");
+    require(!bt_session_send(&s,"\003",1),"input accepted while disk worker stopped");
+    done(&s,130);
+    require(s.recorder->bytes==accepted && !s.error[0],"failed recording never resumes or poisons terminal");
+    snprintf(path,sizeof(path),"%s/%s.log",root,s.recorder->name);
+    require(!kill(worker,SIGCONT),"resume owned stopped writer");
+    bt_session_close(&s);
+    /* Drive ordinary maintenance until the detached writer exits. */
+    deadline=bt_millis()+3000;
+    for(;;) {
+        bt_recorder_pump(NULL,false);
+        pid_t result=waitpid(worker,&status,WNOHANG);
+        if(result==worker || (result<0 && errno==ECHILD)) break;
+        require(bt_millis()<deadline,"detached transcript worker exits"); usleep(1000);
+    }
+    file=fopen(path,"rb"); require(file!=NULL,"overflow transcript exists");
+    require(!fseek(file,-128,SEEK_END),"read interrupted transcript tail");
+    memset(data,0,sizeof(data)); length=fread(data,1,sizeof(data)-1,file); fclose(file);
+    require(length && strstr(data,"transcript interrupted"),"overflow records interruption instead of a false complete log");
+    require(!unlink(path),"remove interrupted transcript");
+    strcpy(path+strlen(path)-4,".meta"); require(!unlink(path) && !rmdir(root),"remove recording fixtures");
+    unsetenv("BATTY_TRANSCRIPT_DIR");
+    for(unsigned i=0;i<128;++i) bt_recorder_pump(NULL,false);
+    puts("PASS live recording, graphics elision, disk failure isolation and stopped-writer backpressure");
+}
 int main(int argc,char **argv) {
     if(argc==3 && !strcmp(argv[1],"--child")) return child(argv[2]);
     require(realpath(argv[0],executable)!=NULL,"test executable path");
     require(realpath("build/batty-session",helper)!=NULL,"session helper path");
+    require(!unsetenv("BATTY_KITTY_LOCAL_FILES"),"isolate default file-medium policy");
     int baseline=fd_count();
     BtSession s,a,b;
     open_session(&s,"query",80,24); done(&s,7); require(contains(&s,"REPLY_OK"),"reply reached waiting child"); bt_session_close(&s);
     puts("PASS query reply relay and child status");
     open_session(&s,"graphics-query",80,24); done(&s,0);
+    bool local_files=true;
+    GhosttyString temporary_dir={0};
+    require(ghostty_terminal_get(s.terminal,GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE,&local_files)==GHOSTTY_SUCCESS &&
+            ghostty_terminal_get(s.terminal,GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE,&temporary_dir)==GHOSTTY_SUCCESS &&
+            !local_files && !temporary_dir.len,"standalone sessions disable local image files by default");
     require(contains(&s,"GRAPHICS_QUERY_OK"),"Sixel capabilities and mode queries reached waiting child");
     GhosttyString graphics_title={0};
     require(ghostty_terminal_get(s.terminal,GHOSTTY_TERMINAL_DATA_TITLE,&graphics_title)==GHOSTTY_SUCCESS &&
@@ -207,6 +287,7 @@ int main(int argc,char **argv) {
     }
     require(!bt_session_send(&s,"\003",1),"interrupt output flood"); done(&s,130); bt_session_close(&s);
     puts("PASS bounded output reads and interrupt during flood");
+    recording_tests();
     for(int i=0;i<5;++i) { open_session(&s,"exit3",80,24); done(&s,3); bt_session_close(&s); }
     require(fd_count()==baseline,"file descriptor leak");
     puts("PASS repeated session cleanup without FD leaks");

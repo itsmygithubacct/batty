@@ -53,8 +53,8 @@ def write_json(path, data):
 
 
 class Runtime:
-    artifacts = ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test', 'cursor-test',
-                 'persistence-test', 'graphics-test', 'sixel-test')
+    artifacts = ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test', 'cursor-test', 'views-test',
+                 'workspace-test', 'persistence-test', 'graphics-test', 'sixel-test', 'layout-test')
 
     def __init__(self, root, env=None):
         self.root = Path(root).resolve()
@@ -218,8 +218,8 @@ printf '%s\\n' "$BASH_VERSION"
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ('build', 'launch'):
-        raise RuntimeErrorDetail('Usage: runtime.py build | launch [BATTY_ARGUMENTS...]')
+    if len(sys.argv) < 2 or sys.argv[1] not in ('build', 'launch', 'kilix'):
+        raise RuntimeErrorDetail('Usage: runtime.py build | launch | kilix [ARGUMENTS...]')
     action, args = sys.argv[1], sys.argv[2:]
     if action == 'build' and args:
         raise RuntimeErrorDetail('Usage: ./build.sh')
@@ -227,12 +227,12 @@ def main():
     with runtime.locked():
         selected = runtime.prepare(force=action == 'build')
         runtime.ensure_native(selected, force=action == 'build')
-    if action == 'launch':
+    if action in ('launch', 'kilix'):
         if args == ['--runtime-info']:
             print(json.dumps(selected, indent=2))
             return
         binary = selected['binary']
-        os.execve(binary, [binary, '--noprofile', '--norc', str(runtime.root / 'lib/controller.bash'),
+        os.execve(binary, [binary, '--noprofile', '--norc', str(runtime.root / ('lib/kilix.bash' if action == 'kilix' else 'lib/controller.bash')),
                            *args], runtime.environment(selected))
 
 

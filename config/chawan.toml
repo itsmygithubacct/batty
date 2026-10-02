@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Seeded once into Batty's private Kilix config directory.
+[buffer]
+images = true
+scripting = false
+
+[display]
+image-mode = "auto"
+color-mode = "true-color"
