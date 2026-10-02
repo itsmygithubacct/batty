@@ -346,7 +346,8 @@ static int read_row(BtRenderer *r, const BtPresentation *f, unsigned y) {
     }
     return 0;
 }
-static void draw_run(BtRenderer *r, unsigned begin, unsigned end, unsigned y, bool blink_visible) {
+static void draw_run_clipped(BtRenderer *r, unsigned begin, unsigned end, unsigned y, bool blink_visible,
+                             const SDL_Rect *clip, const GhosttyColorRgb *foreground) {
     Cell *first=&r->cells[begin];
     if (first->style.blink) r->animated=true;
     if (first->style.invisible || (first->style.blink && !blink_visible)) return;
@@ -385,18 +386,25 @@ static void draw_run(BtRenderer *r, unsigned begin, unsigned end, unsigned y, bo
                 float w=g->width*scale*sx, h=g->height*scale;
                 float left=fmaxf(px,PAD+cell*r->cw), right=fminf(px+w,PAD+next*r->cw);
                 float top=fmaxf(py,PAD+y*r->ch), bottom=fminf(py+h,PAD+(y+1)*r->ch);
+                if(clip) {
+                    left=fmaxf(left,clip->x); right=fminf(right,clip->x+clip->w);
+                    top=fmaxf(top,clip->y); bottom=fminf(bottom,clip->y+clip->h);
+                }
                 if (right>left && bottom>top) {
                     float u=(g->x+(left-px)/w*g->width)/ATLAS_SIZE;
                     float v=(g->y+(top-py)/h*g->height)/ATLAS_SIZE;
                     quad(r,left,top,right-left,bottom-top,u,v,
                         (right-left)/w*g->width/ATLAS_SIZE,(bottom-top)/h*g->height/ATLAS_SIZE,
-                        g->colored?(GhosttyColorRgb){255,255,255}:first->fg);
+                        g->colored?(GhosttyColorRgb){255,255,255}:foreground?*foreground:first->fg);
                 }
             }
             pen+=positions[k].x_advance/64.f*scale;
         }
         i=j;
     }
+}
+static void draw_run(BtRenderer *r, unsigned begin, unsigned end, unsigned y, bool blink_visible) {
+    draw_run_clipped(r,begin,end,y,blink_visible,NULL,NULL);
 }
 static void text_state(BtRenderer *r) {
     glUseProgram(r->program); glUniform2f(r->viewport_uniform,r->width,r->height);
@@ -422,6 +430,51 @@ static void backgrounds(BtRenderer *r, const BtPresentation *f) {
             rect(r,PAD+x*r->cw,PAD+y*r->ch,r->cw,r->ch,bg);
         }
     }
+}
+static int draw_cursor(BtRenderer *r, const BtPresentation *f, bool focused, bool blink_visible) {
+    unsigned col=f->cursor.viewport_x, row=f->cursor.viewport_y;
+    if(f->cursor.wide_tail && col) --col;
+    const BtPresentationCell *cell=&f->cells[(size_t)row*f->cols+col];
+    unsigned span=cell->wide==GHOSTTY_CELL_WIDE_WIDE && col+1<f->cols?2:1;
+    SDL_Rect box={PAD+(int)col*r->cw,PAD+(int)row*r->ch,(int)span*r->cw,r->ch};
+    GhosttyColorRgb color=f->colors.cursor_has_value?f->colors.cursor:f->colors.foreground;
+    if(focused && f->cursor.visual_style==GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR)
+        rect(r,box.x,box.y,2,box.h,color);
+    else if(focused && f->cursor.visual_style==GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE)
+        rect(r,box.x,box.y+box.h-2,box.w,2,color);
+    else if(focused && f->cursor.visual_style==GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK) {
+        rect(r,box.x,box.y,box.w,box.h,color);
+        if(read_row(r,f,row)) return -1;
+        /* Shape the original run, then clip its glyphs to the cursor. Splitting
+         * the run at the cursor would change ligatures and contextual shaping. */
+        GhosttyColorRgb foreground=f->colors.background;
+        if(equal_color(foreground,color)) foreground=f->colors.foreground;
+        if(equal_color(foreground,color))
+            foreground=(GhosttyColorRgb){255-color.r,255-color.g,255-color.b};
+        for(unsigned begin=0;begin<f->cols;) {
+            unsigned end=begin+1;
+            while(end<f->cols && (r->cells[end].wide==GHOSTTY_CELL_WIDE_SPACER_TAIL ||
+                                  same_run(&r->cells[begin],&r->cells[end]))) ++end;
+            if(begin<col+span && end>col)
+                draw_run_clipped(r,begin,end,row,blink_visible,&box,&foreground);
+            begin=end;
+        }
+        for(unsigned x=col;x<col+span;++x) {
+            Cell *c=&r->cells[x];
+            if(c->style.invisible) continue;
+            if(c->style.underline) {
+                rect(r,PAD+x*r->cw,box.y+box.h-2,r->cw,1,foreground);
+                if(c->style.underline==GHOSTTY_SGR_UNDERLINE_DOUBLE)
+                    rect(r,PAD+x*r->cw,box.y+box.h-4,r->cw,1,foreground);
+            }
+            if(c->style.strikethrough) rect(r,PAD+x*r->cw,box.y+r->ascent*.65f,r->cw,1,foreground);
+            if(c->style.overline) rect(r,PAD+x*r->cw,box.y,r->cw,1,foreground);
+        }
+    } else {
+        rect(r,box.x,box.y,box.w,1,color); rect(r,box.x,box.y+box.h-1,box.w,1,color);
+        rect(r,box.x,box.y,1,box.h,color); rect(r,box.x+box.w-1,box.y,1,box.h,color);
+    }
+    return 0;
 }
 static int draw_frame(BtRenderer *r, const BtPresentation *f, bool focused, bool blink_visible) {
     SDL_GL_GetDrawableSize(r->window,&r->width,&r->height);
@@ -457,14 +510,7 @@ static int draw_frame(BtRenderer *r, const BtPresentation *f, bool focused, bool
     GhosttyRenderStateCursor cursor=f->cursor;
     r->animated|=cursor.blinking && cursor.visible && focused;
     if(cursor.visible && cursor.viewport_has_value && (!cursor.blinking || blink_visible || !focused)) {
-        float x=PAD+cursor.viewport_x*r->cw, y0=PAD+cursor.viewport_y*r->ch;
-        GhosttyColorRgb color=colors.cursor_has_value?colors.cursor:colors.foreground;
-        if(focused && cursor.visual_style==GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR) rect(r,x,y0,2,r->ch,color);
-        else if(focused && cursor.visual_style==GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE) rect(r,x,y0+r->ch-2,r->cw,2,color);
-        else { /* Outline keeps the character readable without a second shaping pass. */
-            rect(r,x,y0,r->cw,1,color); rect(r,x,y0+r->ch-1,r->cw,1,color);
-            rect(r,x,y0,1,r->ch,color); rect(r,x+r->cw-1,y0,1,r->ch,color);
-        }
+        if(draw_cursor(r,f,focused,blink_visible)) return -1;
     }
     flush(r);
     if(glGetError()!=GL_NO_ERROR) return error(r,"OpenGL rendering failed");

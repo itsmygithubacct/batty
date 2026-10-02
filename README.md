@@ -141,7 +141,13 @@ behavior: closing their window stops their command.
 
 Paste uses bracketed mode when the application requests it. Resize updates
 both the terminal grid and the PTY and sends SIGWINCH. Application mouse and
-focus reports are encoded according to terminal modes. OSC clipboard access
+focus reports are encoded according to terminal modes. Applications can select
+blinking or steady block, underline and bar cursors with DECSCUSR and set the
+cursor color with OSC 12. Focused block cursors fill the character's cell and
+redraw its shaped text in the terminal background color, using the foreground
+color when the cursor matches that background. Wide characters use both cells,
+including when the cursor is on their trailing cell. Unfocused
+cursors use a steady outline. OSC clipboard access
 is disabled; clipboard operations require the local shortcuts.
 
 Configuration is Bash code read from
@@ -296,8 +302,7 @@ Openbox. GPU performance and native Wayland behavior remain untested.
 This is a prototype, with one window per controller and no tabs, splits,
 search or restoration after service restart. It accepts committed IME text but does not display
 preedit text; paragraph bidirectional layout and complete extended keyboard
-protocol support are unfinished. A block cursor is drawn as an outline,
-some underline styles use a straight line, and selection does not autoscroll.
+protocol support are unfinished. Some underline styles use a straight line, and selection does not autoscroll.
 Unchanged frames are skipped; changed frames redraw the visible grid using
 a glyph atlas. Hooks and rendering share the controller thread.
 

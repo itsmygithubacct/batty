@@ -53,7 +53,7 @@ def write_json(path, data):
 
 
 class Runtime:
-    artifacts = ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test',
+    artifacts = ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test', 'cursor-test',
                  'persistence-test', 'graphics-test', 'sixel-test')
 
     def __init__(self, root, env=None):

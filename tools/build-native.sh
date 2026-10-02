@@ -96,13 +96,15 @@ trap 'rm -rf -- "$staging"' EXIT
 "$cc" "${common[@]}" tests/session_test.c "${session_sources[@]}" "${png_flags[@]}" "${link[@]}" -o "$staging/session-test"
 "$cc" "${common[@]}" tests/window_test.c "${session_sources[@]}" "${window_sources[@]}" \
     "${package_flags[@]}" "${link[@]}" -o "$staging/window-test"
+"$cc" "${common[@]}" tests/cursor_test.c "${session_sources[@]}" "${window_sources[@]}" \
+    "${package_flags[@]}" "${link[@]}" -o "$staging/cursor-test"
 "$cc" "${common[@]}" tests/persistence_test.c "${session_sources[@]}" "${window_sources[@]}" \
     "${package_flags[@]}" "${link[@]}" -o "$staging/persistence-test"
 "$cc" "${common[@]}" tests/graphics_test.c "${session_sources[@]}" "${window_sources[@]}" \
     "${package_flags[@]}" "${link[@]}" -o "$staging/graphics-test"
 "$cc" "${common[@]}" tests/sixel_test.c src/sixel.c -o "$staging/sixel-test"
 # Replace complete files so rebuilding does not truncate a running loadable.
-for artifact in batty-session batty-state batty.so session-test window-test persistence-test graphics-test sixel-test; do
+for artifact in batty-session batty-state batty.so session-test window-test cursor-test persistence-test graphics-test sixel-test; do
     mv -f -- "$staging/$artifact" "build/$artifact"
 done
 printf '%s\n' 'Built build/batty.so, build/batty-state and build/batty-session. Run ./batty.'

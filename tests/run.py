@@ -112,6 +112,7 @@ try:
         else:
             with Image.open(root / 'build/graphics-test.ppm') as frame:
                 frame.save(root / 'build/graphics-test.png')
+    run('cursor-rendering', ['./build/cursor-test'], overrides=gpu_env)
     if run('window-integration', ['./build/window-test'], overrides=gpu_env):
         capture = root / 'build/window-test.ppm'
         with capture.open('rb') as frame:
