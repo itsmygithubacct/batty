@@ -12,7 +12,7 @@ import hashlib
 
 from control import events, request
 from control_paths import session_root
-from kilix_workspace import restore_records, save
+from kilix_workspace import restore_records, save, closed_owner
 from kilix_recovery import capture, read, recovery_directory, private_directory
 
 NAME = re.compile(r'kilix-auto-[0-9a-f]{24}\Z')
@@ -70,13 +70,15 @@ def run(endpoint, root, parent, recovered=None):
             if checkpoint != previous or time.monotonic() - last_capture >= 5:
                 current = {}
                 for pane in checkpoint['panes']:
-                    epoch = pane['session_epoch']
+                    owner_epoch = pane['session_epoch']
+                    if owner_epoch in current:
+                        continue
                     try:
-                        current[epoch] = capture(pane)
+                        current[owner_epoch] = capture(pane)
                     except (OSError, RuntimeError, ValueError):
-                        if epoch not in archives:
+                        if owner_epoch not in archives:
                             raise
-                        current[epoch] = archives[epoch]
+                        current[owner_epoch] = archives[owner_epoch]
                     if sum(map(len, current.values())) > 256 * 1024 * 1024:
                         raise ValueError('Automatic output exceeds the 256 MiB limit')
                 save(path, checkpoint, current)
@@ -128,16 +130,19 @@ def select_snapshot(root, listing):
     selected = None
     for _, path in sorted(candidates, reverse=True):
         try:
-            records = restore_records(path)
-            count = int(records[9])
-            names = [records[10 + index * 5 + 2] for index in range(count)]
-            roots = [records[10 + index * 5 + 1] for index in range(count)]
+            checkpoint = restore_records(path, return_document=True)
+            panes = [pane for pane in checkpoint['panes']
+                     if not closed_owner(pane['session_epoch'], durable)]
+            if not panes:
+                remove_snapshot(path)
+                continue
+            names = [pane['session'] for pane in panes]
+            roots = [pane['session_dir'] for pane in panes]
             if not all(NAME.fullmatch(name) for name in names) or not all(
                     Path(owner_root) == root for owner_root in roots):
                 continue
             if any(name not in available for name in names):
-                checkpoint = restore_records(path, return_document=True)
-                for pane in checkpoint['panes']:
+                for pane in panes:
                     output = pane.get('recovery_output')
                     if not output:
                         raise ValueError('Lost owner has no durable output')
@@ -145,11 +150,6 @@ def select_snapshot(root, listing):
                     private_directory(archive.parent)
                     if read(archive, archive.stem)['epoch'] != pane['session_epoch']:
                         raise ValueError('Saved output epoch changed')
-            checkpoint = restore_records(path, return_document=True)
-            if durable and any((durable / ('closed-' + pane['session_epoch'])).exists()
-                               for pane in checkpoint['panes']):
-                remove_snapshot(path)
-                continue
             if selected is None and all(name not in available or name in orphaned for name in names):
                 selected = path
         except (OSError, ValueError):

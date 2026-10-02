@@ -1249,12 +1249,21 @@ file and native layout before attachment, and requires each saved owner epoch.
 Replaced or already-controlled owners make restore fail; partial views
 are detached without terminating their owners. Restored panes retain output when
 their processes exit, including processes that had already exited at save time;
-close those panes explicitly. Missing owners are replaced with fresh shells;
-saved output is loaded directly into the terminal parser before PTY startup.
+close those panes explicitly. Missing owners are replaced with fresh shells.
+Multiple saved views of one owner share one replacement, retaining their
+controller or observer roles. An explicit program restart runs once per owner.
+Saved output is loaded directly into the terminal parser before PTY startup.
 It is never sent as shell input. Use `kilix --restore FILE --restart-programs`
 to explicitly restart the original commands for lost owners. This reruns their
 argument vectors; it cannot resume process memory, editor buffers or animations.
 Legacy version-1 saves can reattach surviving owners but have no durable output.
+New output archives preserve soft wraps for later reflow and retain the saved
+default foreground/background colors. Short output stays visible above the
+fresh prompt; static images keep their positions. Automatic recovery excludes
+explicitly closed owners and collapses their splits or empty pages while
+retaining the remaining panes and their output archives. Archives captured by
+earlier versions remain readable, but their baked-in line breaks cannot be
+converted back into soft wraps.
 Local unnamed panes
 cannot currently be saved or restored. User configuration and its ready hook
 still run; saved appearance overrides startup appearance defaults.

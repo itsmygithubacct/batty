@@ -348,11 +348,20 @@ static int workspace_layout_bytes(BtWorkspace *w, WORD_LIST *args, bool apply) {
             used+=(size_t)snprintf(ids+used,sizeof(ids)-used,"%s%llu",i?" ":"",(unsigned long long)state->panes[i].id);
         rc=output(args,ids); free(state); return rc;
     }
+    bool prune=args && !strcmp(args->word->word,"--prune");
+    if(prune) args=args->next;
     BtPaneMapping map[BT_LAYOUT_PANES]; unsigned count=0;
     while(args && count<BT_LAYOUT_PANES) {
         if(!args->next || pane_number(args->word->word,&map[count].saved) ||
            pane_number(args->next->word->word,&map[count].current)) break;
         ++count; args=args->next->next;
+    }
+    if(prune && !args) {
+        uint64_t ids[BT_LAYOUT_PANES];
+        for(unsigned i=0;i<count;++i) ids[i]=map[i].saved;
+        if(bt_workspace_layout_prune(state,ids,count)) {
+            free(state); builtin_error("Invalid surviving pane subset"); return 2;
+        }
     }
     if(args || count!=state->pane_count) { free(state); builtin_error("Supply one saved/current pane pair per layout pane"); return 2; }
     rc=bt_workspace_layout_apply(w,state,map,count); free(state);
@@ -575,6 +584,10 @@ static int workspace_builtin(WORD_LIST *args) {
         if(!view) { builtin_error("pane does not exist in this workspace"); return 2; }
         if(!strcmp(verb,"session-name")) return output(args,lookup.session_name?lookup.session_name:"");
         if(!strcmp(verb,"session-dir")) return output(args,lookup.session_dir?lookup.session_dir:"");
+        if(!strcmp(verb,"session-epoch")) {
+            char text[17]; snprintf(text,sizeof(text),"%016llx",(unsigned long long)bt_remote_epoch(&view->session));
+            return output(args,text);
+        }
         if(!strcmp(verb,"confirm")) {
             if(!args || !args->next || args->next->next) goto usage;
             if(bt_workspace_confirm(w,id,args->word->word,args->next->word->word)) goto failed;
@@ -823,7 +836,7 @@ char *batty_doc[]={
     "workspace pane-rename H PANE TITLE; pane-rename-prompt|pane-reset-title|pane-copy-title|pane-clear H PANE",
     "workspace layout H PANE next|splits|stack|tall|grid changes the page arrangement",
     "workspace window-size H WIDTH HEIGHT sets logical window dimensions",
-    "workspace layout-check H HEX [-V VARIABLE]; layout-apply H HEX SAVED CURRENT [SAVED CURRENT ...]",
+    "workspace layout-check H HEX [-V VARIABLE]; layout-apply H HEX [--prune] SAVED CURRENT [SAVED CURRENT ...]",
     "workspace chrome-buttons H MASK sets nine pane button visibility bits (0-511)",
     "workspace chrome-edge H top|bottom places the page strip",
     "workspace settings-result H clear|saved|save-failed|reload-failed updates overlay feedback",

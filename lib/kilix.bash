@@ -97,9 +97,17 @@ fi
 restore_records=()
 if [[ -n $restore_file ]]; then
     [[ $session_mode == run && $# == 0 ]] || { printf '%s\n' 'Restore cannot be combined with a session operation or command.' >&2; exit 2; }
-    mapfile -d '' -t restore_records < <(python3 "$root/tools/kilix_workspace.py" _restore "$restore_file")
-    ((${#restore_records[@]} >= 16)) && [[ ${restore_records[-1]} == DONE ]] || exit 2
-    width=${restore_records[0]} height=${restore_records[1]} font=${restore_records[2]} size=${restore_records[3]}
+    restore_operation=_restore
+    (( !auto_restore )) || restore_operation=_restore-auto
+    mapfile -d '' -t restore_records < <(python3 "$root/tools/kilix_workspace.py" "$restore_operation" "$restore_file")
+    if ((${#restore_records[@]} >= 16)) && [[ ${restore_records[-1]} == DONE ]]; then
+        width=${restore_records[0]} height=${restore_records[1]} font=${restore_records[2]} size=${restore_records[3]}
+    elif ((auto_restore)); then
+        # All remaining panes may have closed since snapshot selection.
+        restore_file='' auto_restore=0 restore_records=()
+    else
+        exit 2
+    fi
 fi
 recording=$(python3 "$root/tools/kilix_settings.py" --recording)
 read -r BATTY_TRANSCRIPT_ENABLED recording_limit recording_graphics <<< "$recording"
@@ -440,12 +448,18 @@ batty workspace bind "$workspace" Ctrl+Tab next-page
 batty workspace bind "$workspace" Ctrl+Shift+Tab previous-page
 if [[ -n $restore_file ]]; then
     restore_map=() restore_group=0 restored=''
+    declare -A recovered_names=() recovered_epochs=()
     for ((restore_i=0; restore_i<restore_records[9]; ++restore_i)); do
         restore_at=$((10+restore_i*5))
         restore_options=(--attach)
         [[ ${restore_records[restore_at+4]} == 0 ]] || restore_options=(--observe)
         if ((restore_i % 4)); then restore_options+=(--target "$restore_group" --direction right); fi
-        if batty workspace add "$workspace" -V restored "${restore_options[@]}" \
+        restore_owner="${restore_records[restore_at+1]}/${restore_records[restore_at+2]}:${restore_records[restore_at+3]}"
+        if [[ -n ${recovered_names[$restore_owner]-} ]]; then
+            batty workspace add "$workspace" -V restored "${restore_options[@]}" \
+                --session-dir "${restore_records[restore_at+1]}" --session "${recovered_names[$restore_owner]}" \
+                --epoch "${recovered_epochs[$restore_owner]}"
+        elif batty workspace add "$workspace" -V restored "${restore_options[@]}" \
             --session-dir "${restore_records[restore_at+1]}" --session "${restore_records[restore_at+2]}" --epoch "${restore_records[restore_at+3]}"; then
             :
         else
@@ -467,6 +481,17 @@ if [[ -n $restore_file ]]; then
                 cd -- "$recovery_cwd"
                 exit 2
             fi
+            recovered_names[$restore_owner]=${recovery_records[2]}
+            batty workspace session-epoch "$workspace" "$restored" -V recovery_epoch
+            recovered_epochs[$restore_owner]=$recovery_epoch
+            if [[ ${restore_records[restore_at+4]} == 1 ]]; then
+                # Creation temporarily claims the controller role. Release it
+                # before rebuilding a saved observer, including observer-only
+                # workspaces, without starting another process.
+                batty workspace remove "$workspace" "$restored"
+                batty workspace add "$workspace" -V restored "${restore_options[@]}" \
+                    --session-dir "${restore_records[restore_at+1]}" --session "${recovery_records[2]}" --epoch "$recovery_epoch"
+            fi
             kilix_automatic_track "$restored"
         fi
         if ((restore_i % 4 == 0)); then restore_group=$restored; fi
@@ -474,7 +499,9 @@ if [[ -n $restore_file ]]; then
         # Restored owners retain their diagnostic output even if already exited.
         application_panes[$restored]=held
     done
-    batty workspace layout-apply "$workspace" "${restore_records[8]}" "${restore_map[@]}"
+    restore_layout_options=()
+    (( !auto_restore )) || restore_layout_options+=(--prune)
+    batty workspace layout-apply "$workspace" "${restore_records[8]}" "${restore_layout_options[@]}" "${restore_map[@]}"
     batty workspace window-size "$workspace" "$width" "$height"
     batty workspace active "$workspace" -V initial
     if ((auto_restore)); then kilix_recover_automatic; fi

@@ -155,6 +155,7 @@ try:
     run_persistent('kilix-workspace-restore', ['python3', 'tests/restore_test.py'], gpu_env, ('restore-first', 'restore-second', 'restore-third'))
     run('kilix-automatic-recovery', ['python3', 'tests/automatic_recovery_test.py'], overrides=gpu_env)
     run('kilix-durable-recovery', ['python3', 'tests/durable_recovery_test.py'], overrides=gpu_env, timeout=45)
+    run('kilix-recovery-edges', ['python3', 'tests/recovery_edges_test.py'], overrides=gpu_env, timeout=75)
     run('kilix-close-confirmation', ['python3', 'tests/close_confirmation_test.py'], overrides=gpu_env)
     run_persistent('persistent-control-discovery', ['python3', 'tests/discovery_test.py'], gpu_env, ('discovery',))
     run('kilix-application-provider', ['python3', 'tests/provider_test.py'], overrides=gpu_env, timeout=60)

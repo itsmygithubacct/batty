@@ -16,7 +16,26 @@ import hashlib
 
 from control import request
 from control_paths import resolve_endpoint
-from kilix_recovery import capture, private_directory, read, write, owner_missing
+from kilix_recovery import capture, private_directory, read, write, owner_missing, recovery_directory
+
+
+def closed_owner(epoch, directory):
+    return directory is not None and (directory / ('closed-' + epoch)).exists()
+
+
+def automatic_records(path):
+    records = restore_records(path)
+    try:
+        directory = recovery_directory()
+    except (OSError, ValueError):
+        directory = None
+    result = records[:10]
+    for index in range(int(records[9])):
+        pane = records[10 + index * 5:15 + index * 5]
+        if not closed_owner(pane[3], directory):
+            result.extend(pane)
+    result[9] = str((len(result) - 10) // 5)
+    return result + ['DONE']
 
 
 def save(path, checkpoint, archives=None):
@@ -169,9 +188,9 @@ def main():
         except (OSError, RuntimeError, ValueError, StopIteration) as error:
             print(f'kilix recovery: {error}', file=sys.stderr)
             return 1
-    if len(sys.argv) == 3 and sys.argv[1] == '_restore':
+    if len(sys.argv) == 3 and sys.argv[1] in ('_restore', '_restore-auto'):
         try:
-            records = restore_records(sys.argv[2])
+            records = automatic_records(sys.argv[2]) if sys.argv[1] == '_restore-auto' else restore_records(sys.argv[2])
             sys.stdout.buffer.write(('\0'.join(records) + '\0').encode('utf-8'))
             return 0
         except (OSError, RuntimeError, ValueError) as error:

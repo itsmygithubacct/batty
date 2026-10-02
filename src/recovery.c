@@ -23,6 +23,7 @@ int bt_recovery_capture(BtSession *s, const BtPresentation *frame, char *const a
     GhosttyFormatter formatter=NULL;
     GhosttyFormatterTerminalOptions options=GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
     options.emit=GHOSTTY_FORMATTER_FORMAT_VT;
+    options.unwrap=true;
     options.extra.size=sizeof(options.extra); options.extra.palette=true;
     options.extra.screen.size=sizeof(options.extra.screen);
     if(ghostty_formatter_terminal_new(NULL,&formatter,s->terminal,options)!=GHOSTTY_SUCCESS) {
@@ -159,6 +160,11 @@ int bt_recovery_load(BtSession *s, const char *path) {
     unsigned cols=s->cols,rows=s->rows,cw=s->cell_width,ch=s->cell_height;
     if(bt_session_resize(s,frame->cols,frame->rows,frame->cell_width,frame->cell_height)) goto done;
     s->restoring=true;
+    char colors[128];
+    snprintf(colors,sizeof(colors),"\033]10;rgb:%02x/%02x/%02x\033\\\033]11;rgb:%02x/%02x/%02x\033\\",
+        frame->colors.foreground.r,frame->colors.foreground.g,frame->colors.foreground.b,
+        frame->colors.background.r,frame->colors.background.g,frame->colors.background.b);
+    feed(s,colors);
     /* The formatter emits LF separators; terminal output needs CR as well. */
     for(size_t at=0,start=0;at<=vt;++at) {
         if(at==vt || data[HEADER+at]=='\n') {
@@ -167,9 +173,27 @@ int bt_recovery_load(BtSession *s, const char *path) {
             start=at+1;
         }
     }
+    /* Graphics placement moves the cursor. Remember the end of the replayed
+     * text first, and leave the new prompt below any visible image as well.
+     * Sparse output stays in view; a full screen scrolls by just one row. */
+    uint16_t cursor_x=0,cursor_y=0;
+    bool pending_wrap=false;
+    ghostty_terminal_get(s->terminal,GHOSTTY_TERMINAL_DATA_CURSOR_X,&cursor_x);
+    ghostty_terminal_get(s->terminal,GHOSTTY_TERMINAL_DATA_CURSOR_Y,&cursor_y);
+    ghostty_terminal_get(s->terminal,GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP,&pending_wrap);
+    unsigned prompt_row=cursor_y+((cursor_x || pending_wrap)?1u:0u);
+    for(size_t i=0;i<frame->placement_count;++i) {
+        const BtPresentationPlacement *p=&frame->placements[i];
+        int64_t bottom=(int64_t)p->geometry.viewport_row*frame->cell_height+p->y_offset+p->geometry.pixel_height;
+        if(bottom>0) {
+            uint64_t row=((uint64_t)bottom+frame->cell_height-1)/frame->cell_height;
+            if(row>prompt_row) prompt_row=row>frame->rows?frame->rows:(unsigned)row;
+        }
+    }
     rc=graphics(s,frame);
-    char bottom[64]; snprintf(bottom,sizeof(bottom),"\033[0m\033[?25h\033[%u;1H\r\n",frame->rows);
-    feed(s,bottom); s->restoring=false;
+    char prompt[64]; snprintf(prompt,sizeof(prompt),"\033[0m\033[?25h\033[%u;1H%s",
+        prompt_row<frame->rows?prompt_row+1:frame->rows,prompt_row<frame->rows?"":"\r\n");
+    feed(s,prompt); s->restoring=false;
     if(bt_session_resize(s,cols,rows,cw,ch)) rc=-1;
 done:
     { int error=errno; free(data); bt_presentation_free(frame); close(fd); errno=error; }

@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 #define _GNU_SOURCE
 #include "session.h"
+#include "recovery.h"
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -203,10 +205,70 @@ static void recording_tests(void) {
     for(unsigned i=0;i<128;++i) bt_recorder_pump(NULL,false);
     puts("PASS live recording, graphics elision, disk failure isolation and stopped-writer backpressure");
 }
+static BtPresentation *recovery_frame(BtSession *s) {
+    BtPresenter *presenter=bt_presenter_new(s->terminal);
+    BtPresentation *frame=NULL;
+    require(presenter && !bt_presenter_capture(presenter,1,1,s->cell_width,s->cell_height,true,&frame),
+            "capture recovery presentation");
+    bt_presenter_free(presenter); return frame;
+}
+static void recovery_tests(void) {
+    const char *contents[]={
+        "\033]10;rgb:ff/00/00\033\\\033]11;rgb:00/00/ff\033\\HELLO",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "HARD_ONE\r\nHARD_TWO",
+        "HELLO\033[3;1H\033_Ga=T,f=32,s=1,v=1,i=5,c=1,r=2,C=1,q=2;/wAA/w==\033\\",
+        ""
+    };
+    char path[]="/tmp/bt-recovery-output-XXXXXX";
+    int fd=mkstemp(path); require(fd>=0,"create private recovery fixture"); close(fd);
+    char setting[PATH_MAX+32]; snprintf(setting,sizeof(setting),"BATTY_RECOVERY_FILE=%s",path);
+    char *args[]={"/bin/cat",NULL},*env[]={"BATTY_TRANSCRIPT_ENABLED=0",NULL};
+    char *restoring[]={setting,"BATTY_TRANSCRIPT_ENABLED=0",NULL};
+    for(unsigned i=0;i<sizeof(contents)/sizeof(*contents);++i) {
+        BtSession source,recovered;
+        require(!bt_session_open(&source,helper,args,env,20,6,10,20),"open recovery source");
+        bt_session_feed(&source,contents[i],strlen(contents[i]));
+        BtPresentation *before=recovery_frame(&source);
+        uint8_t *data=NULL; size_t length=0;
+        require(!bt_recovery_capture(&source,before,args,&data,&length),"serialize recovery output");
+        fd=open(path,O_WRONLY|O_TRUNC|O_CLOEXEC);
+        require(fd>=0 && write(fd,data,length)==(ssize_t)length,"write recovery fixture"); close(fd); free(data);
+        require(!bt_session_open(&recovered,helper,args,restoring,i==1?40:20,6,10,20),"open recovered terminal");
+        BtPresentation *after=recovery_frame(&recovered);
+        if(i==0) {
+            require(after->colors.foreground.r==255 && !after->colors.foreground.g && !after->colors.foreground.b &&
+                    !after->colors.background.r && !after->colors.background.g && after->colors.background.b==255,
+                    "preserve OSC default text and background colors");
+            require(after->cells[0].length && after->codepoints[after->cells[0].offset]=='H' &&
+                    after->cursor.viewport_has_value && after->cursor.viewport_y==1,
+                    "sparse output remains visible above the fresh prompt");
+        } else if(i==1 || i==2) {
+            size_t used=0; char *text=bt_session_text(&recovered,false,&used);
+            require(text && strstr(text,i==1?contents[i]:"HARD_ONE\nHARD_TWO"),
+                    i==1?"soft-wrapped history reflows after widening":"hard line breaks survive recovery");
+            free(text);
+        } else if(i==3) {
+            require(after->placement_count==1 && after->placements[0].geometry.viewport_row==2 &&
+                    after->cursor.viewport_has_value && after->cursor.viewport_y==4,
+                    "static graphics retain their anchor and the prompt follows their bottom edge");
+            require(after->cells[0].length && after->codepoints[after->cells[0].offset]=='H',
+                    "graphics placement does not displace sparse text");
+        } else {
+            require(after->cursor.viewport_has_value && !after->cursor.viewport_y,
+                    "empty recovery starts at the first row");
+        }
+        bt_presentation_free(before); bt_presentation_free(after);
+        bt_session_close(&source); bt_session_close(&recovered);
+    }
+    unlink(path);
+    puts("PASS recovery colors, visible sparse output, soft-wrap reflow, hard newlines, static graphics and empty output");
+}
 int main(int argc,char **argv) {
     if(argc==3 && !strcmp(argv[1],"--child")) return child(argv[2]);
     require(realpath(argv[0],executable)!=NULL,"test executable path");
     require(realpath("build/batty-session",helper)!=NULL,"session helper path");
+    recovery_tests();
     require(!unsetenv("BATTY_KITTY_LOCAL_FILES"),"isolate default file-medium policy");
     int baseline=fd_count();
     BtSession s,a,b;

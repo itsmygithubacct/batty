@@ -569,6 +569,51 @@ int bt_workspace_layout_validate(const BtWorkspaceLayout *state) {
 invalid:
     errno=EINVAL; return -1;
 }
+int bt_workspace_layout_prune(BtWorkspaceLayout *state, const uint64_t *ids, unsigned count) {
+    if(bt_workspace_layout_validate(state) || !ids || !count || count>state->pane_count) {
+        errno=EINVAL; return -1;
+    }
+    bool kept[BT_LAYOUT_PANES]={0};
+    for(unsigned i=0;i<count;++i) {
+        unsigned at=0;
+        while(at<state->pane_count && state->panes[at].id!=ids[i]) ++at;
+        if(at==state->pane_count || kept[at]) { errno=EINVAL; return -1; }
+        kept[at]=true;
+    }
+    BtWorkspaceLayout *result=malloc(sizeof(*result));
+    if(!result) return -1;
+    *result=*state;
+    for(unsigned i=0;i<state->pane_count;++i) if(!kept[i]) {
+        uint64_t id=state->panes[i].id;
+        for(unsigned page=0;page<result->page_count;++page) {
+            BtWorkspacePageLayout *p=&result->pages[page];
+            if(!layout_has(&p->splits,id)) continue;
+            (void)bt_layout_remove(&p->splits,id);
+            (void)bt_layout_remove(&p->tall,id);
+            (void)bt_layout_remove(&p->grid,id);
+            uint64_t order[BT_LAYOUT_PANES];
+            if(bt_layout_order(&p->splits,order)) {
+                if(p->active==id) p->active=order[0];
+                if(p->zoom==id) p->zoom=0;
+                if(p->previous==id) p->previous=0;
+            }
+        }
+    }
+    result->pane_count=0; result->page_count=0; result->previous_page=-1;
+    unsigned active=UINT_MAX;
+    for(unsigned i=0;i<state->pane_count;++i)
+        if(kept[i]) result->panes[result->pane_count++]=state->panes[i];
+    for(unsigned i=0;i<state->page_count;++i) {
+        if(!result->pages[i].splits.count) continue;
+        if(i==state->active_page) active=result->page_count;
+        if((int)i==state->previous_page) result->previous_page=(int)result->page_count;
+        result->pages[result->page_count++]=result->pages[i];
+    }
+    result->active_page=active==UINT_MAX?0:active;
+    int rc=bt_workspace_layout_validate(result);
+    if(!rc) *state=*result;
+    free(result); return rc;
+}
 /* Explicit byte fields keep saved layouts independent of C ABI and host
  * endianness. Bounds are checked before every access, including truncated IDs. */
 typedef struct { uint8_t *data; size_t at,length; bool failed; } LayoutBytes;

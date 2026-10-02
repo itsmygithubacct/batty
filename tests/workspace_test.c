@@ -313,6 +313,26 @@ static void checkpoints(const char *executable, const char *helper) {
     BtWorkspaceLayout *decoded=codec_roundtrip(saved,map);
     free(saved); saved=decoded;
     codec_limits();
+    *bad=*saved;
+    uint64_t surviving[]={map[1].saved,map[3].saved};
+    require(!bt_workspace_layout_prune(bad,surviving,2) && bad->pane_count==2 && bad->page_count==2 &&
+            bad->pages[0].active==map[1].saved && !bad->pages[0].zoom &&
+            !strcmp(bad->panes[0].title,"Build pane λ"),
+            "prune closed split panes without losing page/title state or leaving stale zoom");
+    *actual=*bad;
+    uint64_t duplicate[]={map[1].saved,map[1].saved},unknown[]={UINT64_MAX};
+    require(bt_workspace_layout_prune(bad,duplicate,2)==-1 && !memcmp(bad,actual,sizeof(*bad)) &&
+            bt_workspace_layout_prune(bad,unknown,1)==-1 && !memcmp(bad,actual,sizeof(*bad)) &&
+            bt_workspace_layout_prune(bad,surviving,0)==-1 && !memcmp(bad,actual,sizeof(*bad)),
+            "invalid pruning preserves the original checkpoint");
+    *bad=*saved;
+    require(!bt_workspace_layout_prune(bad,&map[3].saved,1) && bad->page_count==1 && bad->active_page==0 &&
+            bad->previous_page==0 && bad->pages[0].active==map[3].saved && !strcmp(bad->pages[0].title,"Logs"),
+            "prune an entire active page and repair page focus");
+    *bad=*saved;
+    require(!bt_workspace_layout_prune(bad,&map[1].saved,1) && bad->page_count==1 && bad->active_page==0 &&
+            bad->previous_page==-1 && bad->pages[0].active==map[1].saved && !bad->pages[0].previous,
+            "prune the previous page and previous pane without leaving stale focus references");
     /* Validation failure must preserve a live source, including a modal prompt. */
     require(!bt_workspace_message(workspace,"Keep this message"),"checkpoint validation sentinel");
     for(unsigned fault=0;fault<13;++fault) {

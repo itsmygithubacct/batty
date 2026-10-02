@@ -12,7 +12,6 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 from control import request
-from kilix_auto_workspace import select_snapshot
 
 
 def wait_for(check, process=None):
@@ -117,7 +116,10 @@ with tempfile.TemporaryDirectory(prefix='bt-auto-recovery-') as directory:
             assert not (root / (other['session'] + '.sock')).exists(), 'CLI pane owner survived explicit close'
             listing = subprocess.run([str(ROOT / 'batty'), '--list', '--session-dir', str(root)],
                                      env=env, capture_output=True, text=True, check=True, timeout=8).stdout
-            assert select_snapshot(root, listing) is None
+            selected = subprocess.run([sys.executable, str(ROOT / 'tools/kilix_auto_workspace.py'), '_select'],
+                                      env=env, input=listing, capture_output=True, text=True,
+                                      check=True, timeout=8)
+            assert not selected.stdout.strip(), selected.stdout
             assert not list(durable.glob('.kilix-layout-*.json')), 'Terminated owners left stale layout snapshots'
             print('PASS generated panes recover the split layout, title, PIDs and output; closed owners leave no snapshots')
         except Exception:

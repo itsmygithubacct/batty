@@ -126,6 +126,9 @@ typedef struct {
 } BtWorkspaceAppearance;
 BtWorkspaceAppearance bt_workspace_appearance(BtWorkspace *);
 int bt_workspace_layout_validate(const BtWorkspaceLayout *);
+/* Keep a nonempty subset of panes, collapse their removed split siblings,
+ * drop empty pages and repair focus. Failure leaves the snapshot unchanged. */
+int bt_workspace_layout_prune(BtWorkspaceLayout *, const uint64_t *, unsigned count);
 /* BWL2 adds pane title overrides to BWL1. Both are portable little-endian,
  * without struct bytes/padding, pointers, commands or session data. Outputs
  * are malloc-owned; failures leave outputs NULL/zero. Decode validates the
