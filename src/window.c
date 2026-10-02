@@ -3,6 +3,7 @@
 #include "window.h"
 #include "remote.h"
 #include "presentation.h"
+#include <ghostty/vt/unicode.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,16 +63,17 @@ static GhosttyKey key(SDL_Scancode sc) {
         K(MINUS,MINUS); K(EQUALS,EQUAL); K(LEFTBRACKET,BRACKET_LEFT); K(RIGHTBRACKET,BRACKET_RIGHT);
         K(BACKSLASH,BACKSLASH); K(SEMICOLON,SEMICOLON); K(APOSTROPHE,QUOTE);
         K(GRAVE,BACKQUOTE); K(COMMA,COMMA); K(PERIOD,PERIOD); K(SLASH,SLASH);
-        K(KP_0,NUMPAD_0); K(KP_PERIOD,NUMPAD_DECIMAL); K(KP_ENTER,NUMPAD_ENTER);
+        K(KP_0,NUMPAD_0); K(KP_PERIOD,NUMPAD_DECIMAL); K(KP_DECIMAL,NUMPAD_DECIMAL); K(KP_ENTER,NUMPAD_ENTER);
         K(KP_PLUS,NUMPAD_ADD); K(KP_MINUS,NUMPAD_SUBTRACT); K(KP_MULTIPLY,NUMPAD_MULTIPLY);
         K(KP_DIVIDE,NUMPAD_DIVIDE); K(KP_EQUALS,NUMPAD_EQUAL);
         K(LSHIFT,SHIFT_LEFT); K(RSHIFT,SHIFT_RIGHT); K(LCTRL,CONTROL_LEFT); K(RCTRL,CONTROL_RIGHT);
         K(LALT,ALT_LEFT); K(RALT,ALT_RIGHT); K(LGUI,META_LEFT); K(RGUI,META_RIGHT);
         K(CAPSLOCK,CAPS_LOCK); K(NUMLOCKCLEAR,NUM_LOCK); K(NONUSBACKSLASH,INTL_BACKSLASH);
         K(INTERNATIONAL1,INTL_RO); K(INTERNATIONAL3,INTL_YEN);
+        K(INTERNATIONAL2,KANA_MODE); K(INTERNATIONAL4,CONVERT); K(INTERNATIONAL5,NON_CONVERT);
         K(APPLICATION,CONTEXT_MENU); K(MENU,CONTEXT_MENU); K(HELP,HELP);
         K(PRINTSCREEN,PRINT_SCREEN); K(SCROLLLOCK,SCROLL_LOCK); K(PAUSE,PAUSE);
-        K(KP_COMMA,NUMPAD_COMMA); K(KP_EQUALSAS400,NUMPAD_EQUAL);
+        K(KP_COMMA,NUMPAD_SEPARATOR); K(KP_EQUALSAS400,NUMPAD_EQUAL);
         K(KP_BACKSPACE,NUMPAD_BACKSPACE); K(KP_CLEAR,NUMPAD_CLEAR);
         K(KP_CLEARENTRY,NUMPAD_CLEAR_ENTRY);
         K(KP_LEFTPAREN,NUMPAD_PAREN_LEFT); K(KP_RIGHTPAREN,NUMPAD_PAREN_RIGHT);
@@ -94,30 +96,52 @@ static GhosttyKey key(SDL_Scancode sc) {
     }
 #undef K
 }
+static bool keypad_text(SDL_Keysym sym) {
+    SDL_Scancode sc=sym.scancode;
+    if((sc>=SDL_SCANCODE_KP_1 && sc<=SDL_SCANCODE_KP_9) || sc==SDL_SCANCODE_KP_0 ||
+       sc==SDL_SCANCODE_KP_PERIOD || sc==SDL_SCANCODE_KP_DECIMAL) return (sym.mod&KMOD_NUM)!=0;
+    return sc==SDL_SCANCODE_KP_PLUS || sc==SDL_SCANCODE_KP_MINUS || sc==SDL_SCANCODE_KP_MULTIPLY ||
+           sc==SDL_SCANCODE_KP_DIVIDE || sc==SDL_SCANCODE_KP_EQUALS || sc==SDL_SCANCODE_KP_EQUALSAS400 ||
+           sc==SDL_SCANCODE_KP_COMMA || sc==SDL_SCANCODE_KP_LEFTPAREN || sc==SDL_SCANCODE_KP_RIGHTPAREN;
+}
 static bool text_matches_key(SDL_Keysym key, const char *text) {
     const unsigned char *p=(const unsigned char *)text;
     size_t length=strlen(text);
     if(!length) return true;
-    unsigned scalar_count=0;
-    for(size_t i=0;i<length;++i)
-        if((p[i]&0xc0)!=0x80 && ++scalar_count>1) return false;
+    uint32_t points[SDL_TEXTINPUTEVENT_TEXT_SIZE]; size_t count=0;
+    for(size_t i=0;i<length;) {
+        unsigned codepoint=p[i++],more=0,minimum=0;
+        if(codepoint<128) {}
+        else if(codepoint>=0xc2 && codepoint<=0xdf) { codepoint&=31; more=1; minimum=0x80; }
+        else if(codepoint>=0xe0 && codepoint<=0xef) { codepoint&=15; more=2; minimum=0x800; }
+        else if(codepoint>=0xf0 && codepoint<=0xf4) { codepoint&=7; more=3; minimum=0x10000; }
+        else return false;
+        if(more>length-i || count==SDL_TEXTINPUTEVENT_TEXT_SIZE) return false;
+        while(more--) { if((p[i]&0xc0)!=0x80) return false; codepoint=codepoint<<6|(p[i++]&63); }
+        if(codepoint<minimum || codepoint>0x10ffff || (codepoint>=0xd800 && codepoint<=0xdfff)) return false;
+        points[count++]=codepoint;
+    }
+    /* A layout can produce one grapheme with several codepoints. Preserve
+     * its associated text; multi-grapheme IME commits remain direct text. */
+    if(count>1 && ghostty_unicode_grapheme_width(points,count,NULL)!=count) return false;
     if(key.sym<32 || key.sym>=SDLK_SCANCODE_MASK ||
        (key.mod&(KMOD_SHIFT|KMOD_CAPS|KMOD_MODE|KMOD_CTRL|KMOD_ALT|KMOD_GUI))) return true;
-    uint32_t codepoint=p[0];
-    if(codepoint>=0xc2 && codepoint<=0xdf) codepoint&=31u;
-    else if(codepoint>=0xe0 && codepoint<=0xef) codepoint&=15u;
-    else if(codepoint>=0xf0 && codepoint<=0xf4) codepoint&=7u;
-    for(size_t i=1;i<length;++i) codepoint=(codepoint<<6)|(p[i]&63u);
-    return codepoint==(uint32_t)key.sym;
+    return points[0]==(uint32_t)key.sym;
 }
 static int encode_key_raw(BtWindow *w, SDL_Keysym sym, GhosttyKeyAction action, const char *text, size_t len) {
     GhosttyMods consumed=0;
+    GhosttyMods encoded_mods=mods(sym.mod);
     if(len && sym.mod & KMOD_SHIFT) consumed|=GHOSTTY_MODS_SHIFT;
     if(len && sym.mod & KMOD_MODE) consumed|=GHOSTTY_MODS_ALT|GHOSTTY_MODS_CTRL;
+    /* AltGr translates text; its synthetic Ctrl/Alt bits must not turn the
+     * result into a shortcut or suppress Kitty's associated-text field.
+     * Apply the same modifier identity to the corresponding key release. */
+    if((sym.mod&KMOD_MODE) && ((sym.sym>=32 && sym.sym<0x110000) || keypad_text(sym)))
+        encoded_mods&=~(GHOSTTY_MODS_ALT|GHOSTTY_MODS_CTRL|GHOSTTY_MODS_ALT_SIDE|GHOSTTY_MODS_CTRL_SIDE);
     if(w->session.remote) {
         if(bt_remote_observer(&w->session)) return 0;
         BtIntent intent={.type=BT_INTENT_KEY,.action=action,.key=key(sym.scancode),
-            .mods=mods(sym.mod),.consumed=consumed,
+            .mods=encoded_mods,.consumed=consumed,
             .codepoint=sym.sym>=32 && sym.sym<0x110000?(uint32_t)sym.sym:0,
             .composing=w->composing};
         return bt_remote_intent(&w->session,&intent,text,len)?fail(w,w->session.error):0;
@@ -125,7 +149,7 @@ static int encode_key_raw(BtWindow *w, SDL_Keysym sym, GhosttyKeyAction action, 
     ghostty_key_encoder_setopt_from_terminal(w->key_encoder,w->session.terminal);
     ghostty_key_event_set_action(w->key_event,action);
     ghostty_key_event_set_key(w->key_event,key(sym.scancode));
-    ghostty_key_event_set_mods(w->key_event,mods(sym.mod));
+    ghostty_key_event_set_mods(w->key_event,encoded_mods);
     ghostty_key_event_set_consumed_mods(w->key_event,consumed);
     ghostty_key_event_set_composing(w->key_event,w->composing);
     ghostty_key_event_set_unshifted_codepoint(w->key_event,
@@ -147,6 +171,17 @@ static int encode_key(BtWindow *w, SDL_Keysym sym, GhosttyKeyAction action, cons
     int rc=encode_key_raw(w,sym,action,text,len);
     if(!rc && physical) w->held_keys[sym.scancode]=action==GHOSTTY_KEY_ACTION_RELEASE?(SDL_Keysym){0}:sym;
     return rc;
+}
+static int flush_text_key(BtWindow *w) {
+    if(!w->text_pending) return 0;
+    SDL_Keysym sym=w->text_key;
+    GhosttyKeyAction action=w->text_repeat?GHOSTTY_KEY_ACTION_REPEAT:GHOSTTY_KEY_ACTION_PRESS;
+    w->text_pending=false;
+    if(w->session.eof || w->composing) return 0;
+    /* Some physical keys have no SDL_TEXTINPUT (for example Alt+Space).
+     * Keep their press/repeat before later keys and release events. The
+     * authoritative encoder chooses the legacy or extended representation. */
+    return encode_key(w,sym,action,NULL,0);
 }
 int bt_window_release_keys(BtWindow *w) {
     w->text_pending=false;
@@ -325,9 +360,10 @@ int bt_window_event(BtWindow *w, const SDL_Event *event) {
     if(bt_remote_disconnected(&w->session)) return 0;
     if(w->session.remote && bt_remote_observer(&w->session)) return 0;
     if(event->type==SDL_KEYDOWN || event->type==SDL_KEYUP) {
+        if(flush_text_key(w)) return -1;
         SDL_Keysym sym=event->key.keysym;
         bool press=event->type==SDL_KEYDOWN;
-        if((sym.mod & KMOD_CTRL) && (sym.mod & KMOD_SHIFT) && (sym.sym==SDLK_c || sym.sym==SDLK_v)) {
+        if(!(sym.mod & KMOD_MODE) && (sym.mod & KMOD_CTRL) && (sym.mod & KMOD_SHIFT) && (sym.sym==SDLK_c || sym.sym==SDLK_v)) {
             if(!press || event->key.repeat) return 0;
             if(sym.sym==SDLK_c) {
                 if(w->session.remote) {
@@ -354,7 +390,7 @@ int bt_window_event(BtWindow *w, const SDL_Event *event) {
             ghostty_terminal_scroll_viewport(w->session.terminal,scroll); return 0;
         }
         if(w->session.eof) { w->text_pending=false; return 0; }
-        bool text_key=sym.sym>=32 && sym.sym<0x110000;
+        bool text_key=(sym.sym>=32 && sym.sym<0x110000) || keypad_text(sym);
         bool control=(sym.mod & (KMOD_CTRL|KMOD_GUI)) && !(sym.mod & KMOD_MODE);
         if(press && text_key && !control) {
             w->text_key=sym; w->text_repeat=event->key.repeat; w->text_pending=true;
@@ -645,6 +681,11 @@ int bt_window_pump(BtWindow *w, int timeout_ms) {
     if(w->window && !w->embedded) bt_surface_poll();
     if(w->error[0]) return -1;
     if(w->close_requested) return 0;
+    /* SDL queues ordinary text with its key event. Once that batch is
+     * drained, dispatch an Alt key with no text promptly rather than waiting
+     * for its release. AltGr and active composition continue waiting for text. */
+    if(w->text_pending && (w->text_key.mod&KMOD_ALT) && !(w->text_key.mod&KMOD_MODE) &&
+       (!w->window || !SDL_HasEvent(SDL_TEXTINPUT)) && flush_text_key(w)) return -1;
     if(!w->embedded && w->window) w->focused=(SDL_GetWindowFlags(w->window)&SDL_WINDOW_INPUT_FOCUS)!=0;
     if(bt_session_clipboard_policy(&w->session,w->clipboard_write && w->focused &&
         !bt_remote_observer(&w->session))) return fail(w,w->session.error);

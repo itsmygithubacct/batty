@@ -143,6 +143,7 @@ try:
     run_persistent('semantic-stream-clipboard', ['python3', 'tests/semantic_stream_clipboard_test.py'], gpu_env, ('clipboard',))
     run_persistent('semantic-stream-cli-input', ['python3', 'tests/semantic_stream_cli_input_test.py'], gpu_env, ('cli-input',))
     run_persistent('terminal-views', ['./build/views-test'], gpu_env, ('view',))
+    run_persistent('keyboard-protocol', ['./build/keyboard-test'], gpu_env, ('keyboard',))
     run('native-workspace', ['./build/workspace-test'], overrides=gpu_env)
     run_persistent('workspace-control', ['python3', 'tests/control_test.py'], gpu_env, ('control',))
     run('kilix-ephemeral-app', ['python3', '-B', 'tests/ephemeral_app_test.py'], overrides=gpu_env)

@@ -159,6 +159,8 @@ int bt_workspace_reload_result(BtWorkspace *w, uint64_t ticket, bool *done, unsi
     *done=true; *status=w->reload_results[ticket%16].status; return 0;
 }
 static unsigned modifiers(SDL_Keymod mod) {
+    /* AltGr text must not match Ctrl+Alt or unmodified host shortcuts. */
+    if(mod&KMOD_MODE) return 16u;
     return ((mod&KMOD_CTRL)?1u:0u) | ((mod&KMOD_ALT)?2u:0u) |
         ((mod&KMOD_SHIFT)?4u:0u) | ((mod&KMOD_GUI)?8u:0u);
 }
@@ -844,7 +846,7 @@ static int rename_event(BtWorkspace *w, const SDL_Event *e) {
         else if(key==SDLK_BACKSPACE) {
             size_t n=strlen(w->rename_text);
             if(n) { --n; while(n && ((unsigned char)w->rename_text[n]&0xc0)==0x80) --n; w->rename_text[n]=0; }
-        } else if(key==SDLK_u && (e->key.keysym.mod&KMOD_CTRL)) w->rename_text[0]=0;
+        } else if(key==SDLK_u && (e->key.keysym.mod&KMOD_CTRL) && !(e->key.keysym.mod&KMOD_MODE)) w->rename_text[0]=0;
         else w->suppress_text=false;
         return 1;
     }
@@ -1209,7 +1211,7 @@ static int chooser_modal_event(BtWorkspace *w, const SDL_Event *e) {
         } else if(key==SDLK_BACKSPACE) {
             size_t n=strlen(w->choice_send_text);
             if(n) { --n; while(n && ((unsigned char)w->choice_send_text[n]&0xc0)==0x80) --n; w->choice_send_text[n]=0; }
-        } else if(key==SDLK_u && (e->key.keysym.mod&KMOD_CTRL)) w->choice_send_text[0]=0;
+        } else if(key==SDLK_u && (e->key.keysym.mod&KMOD_CTRL) && !(e->key.keysym.mod&KMOD_MODE)) w->choice_send_text[0]=0;
         else w->suppress_text=false;
         return 1;
     }
@@ -1296,7 +1298,7 @@ static int chooser_event(BtWorkspace *w, const SDL_Event *e) {
                 chooser_filter(w,true); break;
             }
             default:
-                if(e->key.keysym.sym==SDLK_u && (e->key.keysym.mod&KMOD_CTRL)) {
+                if(e->key.keysym.sym==SDLK_u && (e->key.keysym.mod&KMOD_CTRL) && !(e->key.keysym.mod&KMOD_MODE)) {
                     w->choice_query[0]=0; chooser_filter(w,true); break;
                 }
                 if(e->key.keysym.sym==SDLK_SLASH && !w->choice_search) { w->choice_search=true; break; }
@@ -2339,7 +2341,7 @@ static int workspace_event(BtWorkspace *w, const SDL_Event *e) {
     if(bt_window_event(&p->view,e) && input_failure(w,p)) return -1;
     bool keyboard=e->type==SDL_KEYDOWN || e->type==SDL_KEYUP || e->type==SDL_TEXTINPUT;
     bool copy=(e->type==SDL_KEYDOWN || e->type==SDL_KEYUP) && e->key.keysym.sym==SDLK_c &&
-        (e->key.keysym.mod&KMOD_CTRL) && (e->key.keysym.mod&KMOD_SHIFT);
+        !(e->key.keysym.mod&KMOD_MODE) && (e->key.keysym.mod&KMOD_CTRL) && (e->key.keysym.mod&KMOD_SHIFT);
     if(keyboard && !copy && p->synchronized) for(unsigned i=0;i<BT_LAYOUT_PANES;++i) {
         Pane *q=&w->panes[i];
         if(q->id && q!=p && q->tab==p->tab && q->synchronized && bt_window_event(&q->view,e) && input_failure(w,q))

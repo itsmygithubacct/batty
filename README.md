@@ -386,7 +386,14 @@ and shared SDK interfaces expose the same choices.
 
 Paste uses bracketed mode when the application requests it. Resize updates
 both the terminal grid and the PTY and sends SIGWINCH. Application mouse and
-focus reports are encoded according to terminal modes. Applications can select
+focus reports are encoded according to terminal modes. Keyboard encoding supports
+legacy cursor/keypad modes, modifyOtherKeys mode 2 and all five Kitty keyboard
+flags: disambiguation, press/repeat/release, alternate keys, reporting all keys
+and associated Unicode text. Keypad text is delivered once; combining graphemes
+retain their physical-key association, and AltGr text bypasses Ctrl+Alt host
+shortcuts. IME composition suppresses navigation keys and delivers committed
+text. Local and persistent panes use the same authoritative encoding rules.
+Applications can select
 blinking or steady block, underline and bar cursors with DECSCUSR and set the
 cursor color with OSC 12. Focused block cursors fill the character's cell and
 redraw its shaped text in the terminal background color, using the foreground
@@ -1674,8 +1681,7 @@ Intel UHD Graphics 630 hardware renderer.
 Hardware GPU performance and full user-session Wayland behavior remain untested.
 The single-session launcher has no tab/split UI or search, and sessions are not
 restored after service restart. It displays IME preedit text at the cursor and
-accepts committed text; paragraph bidirectional layout and complete extended keyboard
-protocol support are unfinished.
+accepts committed text; paragraph bidirectional layout is unfinished.
 Unchanged frames are skipped; changed frames redraw the visible grid using
 a glyph atlas. Hooks and rendering share the controller thread.
 

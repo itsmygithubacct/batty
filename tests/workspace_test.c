@@ -666,6 +666,12 @@ int main(int argc, char **argv) {
     chord(SDL_SCANCODE_B,SDLK_b,KMOD_CTRL,NULL); until(third,"GOT:02");
     require(!bt_workspace_focus(workspace,first),"restore leader source pane");
 
+    require(!bt_workspace_bind(workspace,"Ctrl+Alt+Q","new-page"),"bind host chord that overlaps an AltGr layout");
+    chord(SDL_SCANCODE_Q,SDLK_q,KMOD_RALT|KMOD_LCTRL|KMOD_MODE,"@");
+    until(first,"GOT:40"); until(second,"GOT:40");
+    require(!bt_workspace_action(workspace,&sequence),"AltGr text bypasses host Ctrl+Alt shortcuts and synchronizes");
+    require(!bt_workspace_bind(workspace,"Ctrl+Alt+Q",""),"unbind AltGr overlap fixture");
+
     require(!bt_workspace_bind(workspace,"Ctrl+Shift+T","new-page"),"bind host shortcut");
     require(bt_workspace_bind(workspace,"Ctrl+Ctrl+T","invalid")==-1,"reject ambiguous chord");
     require(bt_workspace_bind(workspace,"Ctrl+T","shell;code")==-1,"reject executable action text");

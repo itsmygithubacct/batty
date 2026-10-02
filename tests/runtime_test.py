@@ -41,7 +41,7 @@ python3 - <<'PY'
 import os
 from pathlib import Path
 Path('build').mkdir(exist_ok=True)
-for name in ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test', 'cursor-test', 'views-test',
+for name in ('batty.so', 'batty-session', 'batty-state', 'session-test', 'window-test', 'cursor-test', 'keyboard-test', 'views-test',
              'workspace-test', 'persistence-test', 'graphics-test', 'sixel-test', 'layout-test'):
     (Path('build') / name).write_text(os.environ['BASH_SOURCE_DIR'])
 count = Path('native-build-count')

@@ -98,6 +98,8 @@ trap 'rm -rf -- "$staging"' EXIT
 "${package_flags[@]}" "${link[@]}" -o "$staging/window-test"
 "$cc" "${common[@]}" tests/cursor_test.c "${session_sources[@]}" "${window_sources[@]}" \
     "${package_flags[@]}" "${link[@]}" -o "$staging/cursor-test"
+"$cc" "${common[@]}" tests/keyboard_test.c "${session_sources[@]}" "${window_sources[@]}" \
+    "${package_flags[@]}" "${link[@]}" -o "$staging/keyboard-test"
 "$cc" "${common[@]}" tests/views_test.c "${session_sources[@]}" "${window_sources[@]}" \
     "${package_flags[@]}" "${link[@]}" -o "$staging/views-test"
 "$cc" "${common[@]}" tests/workspace_test.c "${session_sources[@]}" "${window_sources[@]}" \
@@ -111,7 +113,7 @@ trap 'rm -rf -- "$staging"' EXIT
 # Replace complete files so rebuilding does not truncate a running loadable.
 "$cc" "${common[@]}" src/transcript_worker.c src/transcript_filter.c -o "$staging/batty-transcript"
 "$cc" "${common[@]}" tests/transcript_filter_test.c src/transcript_filter.c -o "$staging/transcript-filter-test"
-for artifact in batty-session batty-state batty.so session-test window-test cursor-test views-test workspace-test persistence-test graphics-test sixel-test layout-test transcript-filter-test batty-transcript; do
+for artifact in batty-session batty-state batty.so session-test window-test cursor-test keyboard-test views-test workspace-test persistence-test graphics-test sixel-test layout-test transcript-filter-test batty-transcript; do
     mv -f -- "$staging/$artifact" "build/$artifact"
 done
 printf '%s\n' 'Built build/batty.so, build/batty-state and build/batty-session. Run ./batty.'
