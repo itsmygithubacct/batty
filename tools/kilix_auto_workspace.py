@@ -13,7 +13,7 @@ import hashlib
 from control import events, request
 from control_paths import session_root
 from kilix_workspace import restore_records, save, closed_owner
-from kilix_recovery import capture, read, recovery_directory, private_directory
+from kilix_recovery import capture, read, recovery_directory, private_directory, directory_lock
 
 NAME = re.compile(r'kilix-auto-[0-9a-f]{24}\Z')
 SNAPSHOT = re.compile(r'\.kilix-layout-[0-9a-f]{24}\.json\Z')
@@ -21,16 +21,18 @@ SNAPSHOT = re.compile(r'\.kilix-layout-[0-9a-f]{24}\.json\Z')
 
 def remove_snapshot(path):
     """Remove only our manifest and its dedicated, private output directory."""
-    path.unlink(missing_ok=True)
-    output = path.parent / ('.batty-output-' + hashlib.sha256(path.name.encode()).hexdigest()[:24])
-    try:
-        private_directory(output)
-        for archive in output.iterdir():
-            if re.fullmatch(r'[0-9a-f]{64}\.bt-output', archive.name):
-                archive.unlink()
-        output.rmdir()
-    except (OSError, ValueError):
-        pass
+    with directory_lock(path.parent) as directory:
+        path.unlink(missing_ok=True)
+        output = path.parent / ('.batty-output-' + hashlib.sha256(path.name.encode()).hexdigest()[:24])
+        try:
+            private_directory(output)
+            for archive in output.iterdir():
+                if re.fullmatch(r'[0-9a-f]{64}\.bt-output', archive.name):
+                    archive.unlink()
+            output.rmdir()
+        except (OSError, ValueError):
+            pass
+        os.fsync(directory)
 
 
 def private_root(root):

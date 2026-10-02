@@ -730,10 +730,16 @@ int bt_renderer_capture(BtRenderer *r, const char *path) {
     SDL_GL_SwapWindow(r->window);
     FILE *f=fopen(path,"wb");
     if(!f) { free(pixels); return error(r,"Could not open screenshot"); }
-    fprintf(f,"P6\n%d %d\n255\n",r->width,r->height);
-    bool ok=true;
-    for(int y=r->height-1;y>=0;--y) for(int x=0;x<r->width;++x)
-        if(fwrite(pixels+((size_t)y*r->width+x)*4,1,3,f)!=3) ok=false;
+    bool ok=fprintf(f,"P6\n%d %d\n255\n",r->width,r->height)>0;
+    for(int y=r->height-1;y>=0 && ok;--y) {
+        uint8_t *row=pixels+(size_t)y*r->width*4;
+        /* Compact RGBA in place, then write one PPM row at a time. */
+        for(int x=0;x<r->width;++x) {
+            row[x*3]=row[x*4]; row[x*3+1]=row[x*4+1]; row[x*3+2]=row[x*4+2];
+        }
+        size_t bytes=(size_t)r->width*3;
+        ok=fwrite(row,1,bytes,f)==bytes;
+    }
     free(pixels);
     if(fclose(f)) ok=false;
     return ok?0:error(r,"Could not write screenshot");

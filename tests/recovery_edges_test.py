@@ -174,7 +174,7 @@ def partially_closed(fixture):
     for pane in (second, third):
         request(endpoint, 'send', pane['id'], b'SAVED_SURVIVOR_OUTPUT\n')
         wait(lambda: 'SAVED_SURVIVOR_OUTPUT' in request(endpoint, 'dump', pane['id']), original)
-    fixture.durable.mkdir(mode=0o700, parents=True)
+    fixture.durable.mkdir(mode=0o700, parents=True, exist_ok=True)
     saved = fixture.durable / ('.kilix-layout-' + 'a' * 24 + '.json')
     save(saved, request(endpoint, 'checkpoint'))
     fixture.stop(original)
@@ -214,7 +214,7 @@ def owner_crash(fixture):
     request(endpoint, 'pane-rename', pane['id'], b'Owner crash output')
     request(endpoint, 'send', pane['id'], b'ARCHIVED_BEFORE_CRASH\n')
     wait(lambda: 'ARCHIVED_BEFORE_CRASH' in request(endpoint, 'dump', pane['id']), original)
-    fixture.durable.mkdir(mode=0o700, parents=True)
+    fixture.durable.mkdir(mode=0o700, parents=True, exist_ok=True)
     saved = fixture.durable / ('.kilix-layout-' + 'b' * 24 + '.json')
     save(saved, request(endpoint, 'checkpoint'))
     fixture.stop(original)
@@ -244,7 +244,7 @@ def automatic_observer(fixture, reboot):
     observer = request(endpoint, 'checkpoint')['panes'][0]
     request(endpoint, 'rename', observer['id'], b'Observer page')
     request(endpoint, 'pane-rename', observer['id'], b'Saved observer')
-    fixture.durable.mkdir(mode=0o700, parents=True)
+    fixture.durable.mkdir(mode=0o700, parents=True, exist_ok=True)
     saved = fixture.durable / ('.kilix-layout-' + 'c' * 24 + '.json')
     save(saved, request(endpoint, 'checkpoint'))
     fixture.stop(original)

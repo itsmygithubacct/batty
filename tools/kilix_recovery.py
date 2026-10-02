@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Private durable output archives for replacing a lost Batty owner."""
+from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
@@ -30,6 +31,17 @@ def private_directory(path, create=False):
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o777 != 0o700:
         raise ValueError('Recovery directory must be private and user-owned')
     return path
+
+
+@contextmanager
+def directory_lock(path):
+    """Coordinate manifest publication, archive pruning and snapshot removal."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def recovery_directory(create=False):

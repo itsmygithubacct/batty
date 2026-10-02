@@ -35,6 +35,8 @@ static int child(void) {
         if(c==254) { used=0; printf("\033[>31uFLAGS31\r\n"); continue; }
         if(c==253) { used=0; printf("\033[<u\033[>4;0mLEGACY\r\n"); continue; }
         if(c==252) { used=0; printf("\033[>4;2mMODIFY2\r\n"); continue; }
+        if(c==251) { used=0; printf("\033[?1049h\033[?1007h\033[>31uALT_SCROLL\r\n"); continue; }
+        if(c==250) { used=0; printf("\033[?1049lMAIN_SCREEN\r\n"); continue; }
         if(c==255) {
             char report[9000];
             int at=snprintf(report,sizeof(report),"\033[2J\033[3J\033[HKEYS%u:",++queries);
@@ -173,6 +175,23 @@ static void tests(void) {
     key(SDL_SCANCODE_LEFT,SDLK_LEFT,KMOD_NONE,false,false);
     text("λ界");
     expect("λ界");
+
+    command(251,"ALT_SCROLL");
+    SDL_Event wheel={.type=SDL_MOUSEWHEEL}; wheel.wheel.y=1;
+    require(!bt_window_event(&window,&wheel),"scroll alternate screen upward");
+    expect("\033[1;1:1A\033[1;1:1A\033[1;1:1A");
+    require(!bt_window_release_keys(&window),"release focus after alternate scroll");
+    expect("");
+
+    key(SDL_SCANCODE_UP,SDLK_UP,KMOD_CTRL,true,false);
+    expect("\033[1;5:1A");
+    require(!bt_window_event(&window,&wheel),"scroll while the Up key is held");
+    expect("\033[1;1:1A\033[1;1:1A\033[1;1:1A");
+    require(!bt_window_release_keys(&window),"release the physical Up key after scrolling");
+    expect("\033[1;5:3A");
+    key(SDL_SCANCODE_UP,SDLK_UP,KMOD_NONE,false,false);
+    expect("");
+    command(250,"MAIN_SCREEN");
 
     command(253,"LEGACY");
     key(SDL_SCANCODE_SPACE,SDLK_SPACE,KMOD_ALT,true,false);

@@ -16,7 +16,7 @@ import hashlib
 
 from control import request
 from control_paths import resolve_endpoint
-from kilix_recovery import capture, private_directory, read, write, owner_missing, recovery_directory
+from kilix_recovery import capture, private_directory, read, write, owner_missing, recovery_directory, directory_lock
 
 
 def closed_owner(epoch, directory):
@@ -52,42 +52,49 @@ def save(path, checkpoint, archives=None):
     if existing is not None and (not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.getuid()):
         raise ValueError('Workspace destination must be a regular file owned by the current user')
     checkpoint = copy.deepcopy(checkpoint)
-    total, captured = 0, []
+    total, captured = 0, {}
     for pane in checkpoint['panes']:
+        owner = (pane['session_dir'], pane['session'], pane['session_epoch'])
+        if owner in captured:
+            continue
         archive = archives.get(pane['session_epoch']) if archives is not None else None
         if archive is None:
             archive = capture(pane)
         total += len(archive)
         if total > 256 * 1024 * 1024:
             raise ValueError('Workspace output exceeds the 256 MiB limit')
-        captured.append(archive)
-    output = private_directory(path.parent / ('.batty-output-' + hashlib.sha256(path.name.encode()).hexdigest()[:24]), create=True)
-    for pane, archive in zip(checkpoint['panes'], captured):
-        pane['recovery_output'] = output.name + '/' + write(output, archive)
-    data = (json.dumps({'format': 'batty-workspace', 'version': 2,
-                        'checkpoint': checkpoint}, ensure_ascii=True, indent=2) + '\n').encode()
-    if len(data) > 1024 * 1024:
-        raise ValueError('Workspace file exceeds the 1 MiB limit')
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    temporary = None
-    try:
-        fd, temporary = tempfile.mkstemp(prefix='.batty-workspace-', dir=path.parent)
-        with os.fdopen(fd, 'wb') as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        captured[owner] = archive
+    # The parent lock also covers automatic snapshot removal. Capture first so
+    # another saver is never blocked while this process waits for a live owner.
+    with directory_lock(path.parent) as directory:
+        output = private_directory(path.parent / ('.batty-output-' + hashlib.sha256(path.name.encode()).hexdigest()[:24]), create=True)
         temporary = None
-        os.fsync(directory)
-    finally:
-        if temporary is not None:
-            os.unlink(temporary)
-        os.close(directory)
-    retained = {pane['recovery_output'].split('/')[1] for pane in checkpoint['panes']}
-    for old in output.glob('*.bt-output'):
-        if old.name not in retained:
-            old.unlink()
+        try:
+            outputs = {owner: output.name + '/' + write(output, archive)
+                       for owner, archive in captured.items()}
+            for pane in checkpoint['panes']:
+                owner = (pane['session_dir'], pane['session'], pane['session_epoch'])
+                pane['recovery_output'] = outputs[owner]
+            data = (json.dumps({'format': 'batty-workspace', 'version': 2,
+                                'checkpoint': checkpoint}, ensure_ascii=True, indent=2) + '\n').encode()
+            if len(data) > 1024 * 1024:
+                raise ValueError('Workspace file exceeds the 1 MiB limit')
+            fd, temporary = tempfile.mkstemp(prefix='.batty-workspace-', dir=path.parent)
+            with os.fdopen(fd, 'wb') as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            os.fsync(directory)
+            retained = {name.split('/')[1] for name in outputs.values()}
+            for old in output.glob('*.bt-output'):
+                if old.name not in retained:
+                    old.unlink()
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
 
 
 def restore_records(path, *, return_document=False):

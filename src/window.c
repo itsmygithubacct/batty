@@ -477,7 +477,9 @@ int bt_window_event(BtWindow *w, const SDL_Event *event) {
                 if(mouse_report(w,GHOSTTY_MOUSE_ACTION_PRESS,delta>0?GHOSTTY_MOUSE_BUTTON_FOUR:GHOSTTY_MOUSE_BUTTON_FIVE,x,y,false,mods(SDL_GetModState()))) return -1;
         } else if(!w->session.eof && mode(w,GHOSTTY_MODE_ALT_SCROLL) && (mode(w,GHOSTTY_MODE_ALT_SCREEN_SAVE)||mode(w,GHOSTTY_MODE_ALT_SCREEN))) {
             SDL_Keysym sym={.scancode=delta>0?SDL_SCANCODE_UP:SDL_SCANCODE_DOWN};
-            for(int i=0;i<abs(delta)*3;++i) if(encode_key(w,sym,GHOSTTY_KEY_ACTION_PRESS,NULL,0)) return -1;
+            /* Scroll-generated arrows have no physical key lifecycle. They
+             * must not create held keys or replace an actual arrow's mods. */
+            for(int i=0;i<abs(delta)*3;++i) if(encode_key_raw(w,sym,GHOSTTY_KEY_ACTION_PRESS,NULL,0)) return -1;
         } else {
             GhosttyTerminalScrollViewport scroll={.tag=GHOSTTY_SCROLL_VIEWPORT_DELTA,.value.delta=-delta*3};
             ghostty_terminal_scroll_viewport(w->session.terminal,scroll);

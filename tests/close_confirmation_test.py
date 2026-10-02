@@ -27,11 +27,18 @@ def wait_for(check, process=None):
     raise AssertionError('Close confirmation deadline')
 
 
+def owner_identities(panes):
+    return [(p['id'], p['pid'], p['session_epoch'], p['observe'], p['exit_status'], p['disconnected'])
+            for p in panes]
+
+
 with tempfile.TemporaryDirectory(prefix='bt-close-confirm-') as directory:
     base = Path(directory)
     sessions = base / 'sessions'
     ready = base / 'ready'
+    recovery = base / 'recovery'
     env = os.environ | {'BATTY_SESSION_DIR': str(sessions),
+                        'BATTY_KILIX_RECOVERY_DIR': str(recovery),
                         'BATTY_KILIX_CONFIG': str(ROOT / 'tests/automatic_recovery_config.bash'),
                         'BATTY_AUTO_RECOVERY_READY': str(ready),
                         'BATTY_KILIX_AUTO_RECOVER': '0', 'BATTY_OFFLINE': '1'}
@@ -83,6 +90,15 @@ with tempfile.TemporaryDirectory(prefix='bt-close-confirm-') as directory:
             assert process.poll() is None and owner.exists(), 'N failed to cancel termination'
             close_shortcut()
             time.sleep(0.15)
+            recovery.chmod(0o755)
+            key('y')
+            wait_for(lambda: 'record recovery closure' in (base / 'frontend.log').read_text(), process)
+            assert owner.exists() and owner_identities(request(endpoint, 'checkpoint')['panes']) == owner_identities([pane]), \
+                'Failed durable closure removed its pane or owner'
+            recovery.chmod(0o700)
+            key('Escape')  # Dismiss the action-failed message before retrying.
+            close_shortcut()
+            time.sleep(0.15)
             key('y')
             wait_for(lambda: process.poll() is not None)
             assert process.returncode == 0 and not owner.exists(), 'Y did not terminate the owner'
@@ -100,17 +116,44 @@ with tempfile.TemporaryDirectory(prefix='bt-close-confirm-') as directory:
             target.set_input_focus(X.RevertToParent, X.CurrentTime)
             host.sync()
             assert process.poll() is None, 'Page close skipped confirmation'
+            failures = (base / 'frontend.log').read_text().count('record recovery closure')
+            recovery.chmod(0o755)
+            key('y')
+            wait_for(lambda: (base / 'frontend.log').read_text().count('record recovery closure') > failures, process)
+            assert all(path.exists() for path in owners) and owner_identities(request(endpoint, 'checkpoint')['panes']) == owner_identities(panes), \
+                'Failed durable page closure removed its panes or owners'
+            recovery.chmod(0o700)
+            # The first owner now closes successfully, but the second one's
+            # marker rejects closure. A retry must remember the first success.
+            marker = recovery / ('closed-' + panes[1]['session_epoch'])
+            marker.write_bytes(b'')
+            marker.chmod(0o644)
+            key('Escape')
+            key('F9')
+            time.sleep(0.15)
+            key('y')
+            failures += 1
+            wait_for(lambda: (base / 'frontend.log').read_text().count('record recovery closure') > failures, process)
+            assert not owners[0].exists() and owners[1].exists(), 'Partial page closure did not retain the failing owner'
+            assert [p['id'] for p in request(endpoint, 'checkpoint')['panes']] == [p['id'] for p in panes], \
+                'Partial page closure removed saved output panes'
+            marker.chmod(0o600)
+            key('Escape')
+            key('F9')
+            time.sleep(0.15)
             key('y')
             wait_for(lambda: process.poll() is not None)
             assert process.returncode == 0 and all(not path.exists() for path in owners), \
                 'Confirmed page close left a generated owner running'
-            print('PASS live Kilix pane and page close require Y; N preserves a running process')
+            print('PASS live Kilix pane/page close requires Y; N and storage failure preserve owners and panes; partial closure retries after storage repair')
         except Exception:
             log.flush()
             log.seek(0)
             print(log.read(), file=sys.stderr)
             raise
         finally:
+            if recovery.exists():
+                recovery.chmod(0o700)
             if host is not None:
                 host.close()
             if process.poll() is None:

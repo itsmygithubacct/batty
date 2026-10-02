@@ -1241,8 +1241,11 @@ a private temporary file and atomic replacement; the resulting file is mode
 0600. Existing symlinks and nonregular destinations are rejected. Version-2 saves
 include private, checksum-verified output files in a sibling `.batty-output-*`
 directory; keep that directory with the JSON file. Each output archive is at
-most 128 MiB, and a workspace's archives total at most 256 MiB. Saving records
-owner references, output, working directories and original command arguments. It does
+most 128 MiB, and a workspace's archives total at most 256 MiB. Shared views use
+one output capture per owner.
+Concurrent saves and automatic cleanup preserve the output archives referenced
+by the final saved file. Saving records owner references, output, working
+directories and original command arguments. It does
 not detach panes or stop processes. Restore it with `kilix --restore FILE` after closing the original controlling
 frontend. Restore uses the saved window/font/chrome settings, checks the entire
 file and native layout before attachment, and requires each saved owner epoch.
@@ -1259,7 +1262,10 @@ argument vectors; it cannot resume process memory, editor buffers or animations.
 Legacy version-1 saves can reattach surviving owners but have no durable output.
 New output archives preserve soft wraps for later reflow and retain the saved
 default foreground/background colors. Short output stays visible above the
-fresh prompt; static images keep their positions. Automatic recovery excludes
+fresh prompt; static images keep their positions on the active screen. Images
+captured from a scrolled viewport can restore on the wrong row. A generated
+owner's close request retains its pane if recording deliberate closure fails;
+repair the recovery directory and retry. Automatic recovery excludes
 explicitly closed owners and collapses their splits or empty pages while
 retaining the remaining panes and their output archives. It handles stale
 socket files left by crashed owners and preserves observer-only layouts

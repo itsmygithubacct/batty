@@ -5,8 +5,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -63,6 +65,22 @@ def run_persistent(name, argv, gpu_env, names, expected=0):
             if not endpoint.exists() or endpoint.is_symlink():
                 continue
             try:
+                if name == 'persistent-session' and session == 'closure-000000000000000000000001':
+                    # A deadline can interrupt the deliberately broken storage
+                    # fixture before its atexit repair. Repair only this runner's
+                    # private fixture so its retained owner can still be stopped.
+                    storage = private / 'closure-state'
+                    if storage.exists():
+                        mode = storage.lstat().st_mode
+                        if stat.S_ISREG(mode):
+                            storage.unlink()
+                        elif not stat.S_ISDIR(mode):
+                            raise ValueError('Unexpected closure fixture storage')
+                    storage.mkdir(mode=0o700, exist_ok=True)
+                    storage.chmod(0o700)
+                    for marker in storage.iterdir():
+                        if re.fullmatch(r'closed-[0-9a-f]{16}', marker.name):
+                            marker.unlink()
                 cleanup = subprocess.run(['./batty', '--terminate', session, '--session-dir', str(private)],
                                          env=env | gpu_env | {'BATTY_CONFIG': '/dev/null'},
                                          capture_output=True, text=True, timeout=10)
@@ -70,6 +88,8 @@ def run_persistent(name, argv, gpu_env, names, expected=0):
                     failures.append(dict(session=session, code=cleanup.returncode, stderr=cleanup.stderr))
             except subprocess.TimeoutExpired:
                 failures.append(dict(session=session, error='cleanup deadline exceeded'))
+            except (OSError, ValueError) as exc:
+                failures.append(dict(session=session, error=str(exc)))
         if failures:
             results.append(dict(name=name + '-cleanup', passed=False, root=str(private), failures=failures))
             print(name + '-cleanup: FAIL; private root retained at ' + str(private), flush=True)
@@ -153,6 +173,7 @@ try:
     run('automatic-transcript-maintenance', ['python3', 'tests/transcript_automatic_test.py'], overrides=gpu_env)
     run('default-transcript-recording', ['python3', 'tests/transcript_default_test.py'], overrides=gpu_env)
     run_persistent('kilix-workspace-restore', ['python3', 'tests/restore_test.py'], gpu_env, ('restore-first', 'restore-second', 'restore-third'))
+    run('kilix-workspace-storage', ['python3', 'tests/workspace_storage_test.py'])
     run('kilix-automatic-recovery', ['python3', 'tests/automatic_recovery_test.py'], overrides=gpu_env)
     run('kilix-durable-recovery', ['python3', 'tests/durable_recovery_test.py'], overrides=gpu_env, timeout=45)
     run('kilix-recovery-edges', ['python3', 'tests/recovery_edges_test.py'], overrides=gpu_env, timeout=75)
@@ -165,7 +186,7 @@ try:
                               'BATTY_SHELL': '/bin/cat', 'KITTY_KILIX_RENDERING': '0'}, (), expected=9)
     run_persistent('bash-workspace', [str(bash), '--noprofile', '--norc', 'tests/workspace.bash'],
                    gpu_env, ('workspace',))
-    if run_persistent('persistent-session', ['./build/persistence-test'], gpu_env, ('main', 'tree', 'orphan', 'cancel', 'badexec', 'record')):
+    if run_persistent('persistent-session', ['./build/persistence-test'], gpu_env, ('main', 'tree', 'orphan', 'cancel', 'badexec', 'record', 'closure-000000000000000000000001')):
         try:
             from PIL import Image
         except ImportError:

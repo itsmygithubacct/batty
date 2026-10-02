@@ -336,6 +336,7 @@ static int intent(Service *s, const BtIntent *in, const void *data, size_t lengt
 }
 static void request(Service *s, Peer *peer, const BtPacket *p, int received) {
     int error=0, output=-1; uint64_t output_size=0;
+    bool recovery_failed=false;
     void *bytes=NULL;
     if (!p->request || p->request!=peer->last_request+1 || peer->waiting || peer->output) {
         if (received>=0) close(received);
@@ -376,7 +377,9 @@ static void request(Service *s, Peer *peer, const BtPacket *p, int received) {
         else if (p->epoch && p->epoch!=s->epoch) error=ESTALE;
         else if (p->epoch && (s->claimed || control || observe)) error=EBUSY;
         else {
-            if(!p->epoch) bt_recovery_forget(getenv("BATTY_KILIX_RECOVERY_DIR"),s->epoch);
+            if(!p->epoch && bt_recovery_forget(getenv("BATTY_KILIX_RECOVERY_DIR"),s->epoch)) {
+                error=errno; recovery_failed=true; goto finish;
+            }
             s->stopping_peer=(int)(peer-s->peers); peer->packet=*p; stopped=1; return;
         }
     } else if (!peer->role) error=EACCES;
@@ -432,6 +435,7 @@ finish:
     /* Rejected client operations do not poison the authoritative terminal. */
     if (error) s->session.error[0]=0;
     queue(s,peer,p,error,output,output_size);
+    if(recovery_failed) peer->packet.flags=BT_STOP_RECOVERY_FAILED;
 }
 static int bootstrap(Service *s) {
     BtPacket p; bt_wire_packet(&p,BT_WIRE_READY); metadata(s,&p);

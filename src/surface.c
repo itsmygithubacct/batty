@@ -108,9 +108,15 @@ int bt_surface_capture(BtSurface *s, const char *path) {
     FILE *f=fopen(path,"wb");
     if(!f) { free(pixels); return fail(s,"Could not open window capture"); }
     bool ok=fprintf(f,"P6\n%d %d\n255\n",width,height)>0;
-    for(int y=height-1;y>=0 && ok;--y)
-        for(int x=0;x<width;++x)
-            if(fwrite(pixels+((size_t)y*width+x)*4,1,3,f)!=3) { ok=false; break; }
+    for(int y=height-1;y>=0 && ok;--y) {
+        uint8_t *row=pixels+(size_t)y*width*4;
+        /* Compact RGBA in place, then write one PPM row at a time. */
+        for(int x=0;x<width;++x) {
+            row[x*3]=row[x*4]; row[x*3+1]=row[x*4+1]; row[x*3+2]=row[x*4+2];
+        }
+        size_t bytes=(size_t)width*3;
+        ok=fwrite(row,1,bytes,f)==bytes;
+    }
     free(pixels);
     if(fclose(f)) ok=false;
     return ok?0:fail(s,"Could not write window capture");

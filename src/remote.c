@@ -707,7 +707,9 @@ static int stop(const char *root, const char *name, uint64_t epoch, char *error,
     int passed=-1, rc=exchange(fd,&p,-1,&passed,bt_millis()+8000), e=errno;
     if (passed>=0) { close(passed); rc=-1; e=EPROTO; }
     close(fd);
-    return rc?bt_wire_error(error,capacity,"terminate state service",e):0;
+    const char *operation=rc>0 && p.flags==BT_STOP_RECOVERY_FAILED?
+        "record recovery closure (check recovery directory permissions and free space)":"terminate state service";
+    return rc?bt_wire_error(error,capacity,operation,e):0;
 }
 int bt_remote_terminate(const char *root, const char *name, char *error, size_t capacity) {
     return stop(root,name,0,error,capacity);

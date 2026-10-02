@@ -87,7 +87,15 @@ fi
 # root through its environment even when user configuration did not export it.
 [[ -z ${BATTY_SESSION_DIR:-} ]] || export BATTY_SESSION_DIR
 [[ -z ${XDG_RUNTIME_DIR:-} ]] || export XDG_RUNTIME_DIR
-export BATTY_KILIX_RECOVERY_DIR=${BATTY_KILIX_RECOVERY_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/batty/recovery}
+recovery_directory=${BATTY_KILIX_RECOVERY_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/batty/recovery}
+if (( !ephemeral )) && [[ ${BATTY_KILIX_AUTO_RECOVER:-1} != 0 || -n ${BATTY_KILIX_RECOVERY_DIR:-} || -e $recovery_directory || -L $recovery_directory ]]; then
+    export BATTY_KILIX_RECOVERY_DIR=$recovery_directory
+    # Prepare configured or existing recovery storage before an owner starts.
+    # Disabling recovery on fresh state does not create durable state directories.
+    python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from kilix_recovery import recovery_directory; recovery_directory(create=True)' "$root/tools"
+else
+    unset BATTY_KILIX_RECOVERY_DIR
+fi
 enable -f "$root/build/batty.so" batty
 if [[ -z $restore_file && $session_mode == run && $# == 0 && $skip_initial_recovery != 1 && ${BATTY_KILIX_AUTO_RECOVER:-1} != 0 ]]; then
     orphan_listing=$(batty list) || orphan_listing=''
@@ -143,6 +151,7 @@ application_ids=()
 declare -A application_panes=()
 declare -A automatic_panes=()
 declare -A automatic_roots=()
+declare -A automatic_closed=()
 kilix_automatic_name() {
     python3 -c 'import secrets; print("kilix-auto-" + secrets.token_hex(12))'
 }
@@ -157,9 +166,11 @@ kilix_automatic_add() {
 kilix_automatic_terminate() {
     local pane=$1 name=${automatic_panes[$1]-}
     [[ -n $name ]] || return 0
+    [[ -z ${automatic_closed[$pane]-} ]] || return 0
     batty terminate --session-dir "${automatic_roots[$pane]}" "$name" || return
-    unset 'automatic_panes[$pane]'
-    unset 'automatic_roots[$pane]'
+    # Page closure can fail on a later owner. Keep this completion until the
+    # pane is removed so a retry does not try to stop a vanished owner again.
+    automatic_closed[$pane]=1
 }
 kilix_automatic_track() {
     local pane=$1 name='' dir=''
@@ -174,8 +185,9 @@ kilix_automatic_track() {
 kilix_automatic_close() {
     local pane=$1
     kilix_automatic_track "$pane" || return
+    kilix_automatic_terminate "$pane" || return
     batty workspace remove "$workspace" "$pane" || return
-    kilix_automatic_terminate "$pane"
+    unset 'automatic_panes[$pane]' 'automatic_roots[$pane]' 'automatic_closed[$pane]'
 }
 kilix_request_close() {
     local pane=$1 status
@@ -222,8 +234,11 @@ kilix_automatic_close_page() {
         if [[ $tab == "$target_tab" ]]; then kilix_automatic_track "$row" || return; fi
         if [[ $tab == "$target_tab" && -n ${automatic_panes[$row]-} ]]; then closing+=("$row"); fi
     done <<<"$listing"
-    batty workspace close-page "$workspace" "$pane" || return
     for row in "${closing[@]}"; do kilix_automatic_terminate "$row" || return; done
+    batty workspace close-page "$workspace" "$pane" || return
+    for row in "${closing[@]}"; do
+        unset 'automatic_panes[$row]' 'automatic_roots[$row]' 'automatic_closed[$row]'
+    done
 }
 kilix_recover_automatic() {
     [[ ${BATTY_KILIX_AUTO_RECOVER:-1} != 0 ]] || return 0

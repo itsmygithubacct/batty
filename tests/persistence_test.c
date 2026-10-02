@@ -7,6 +7,7 @@
 #include "remote.h"
 #include "remote_internal.h"
 #include "presentation.h"
+#include "workspace.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -22,6 +23,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -36,6 +38,9 @@ typedef struct {
 
 static char root[PATH_MAX], self[PATH_MAX], helper[PATH_MAX], service[PATH_MAX];
 static char progress_path[PATH_MAX], error[256];
+static char closure_directory[PATH_MAX],closure_marker[PATH_MAX];
+static const char closure_name[]="closure-000000000000000000000001";
+static BtWorkspace *closure_workspace;
 static BtSession clients[4];
 static BtWindow window;
 static const char *owned_names[8];
@@ -104,14 +109,25 @@ static bool write_all(int fd,const void *data,size_t length) {
     return true;
 }
 static void cleanup(void) {
+    /* Repair only this test's storage so a failing assertion can still stop
+     * its owner through the same deliberate-closure path. */
+    if(*closure_directory) {
+        struct stat st;
+        if(!lstat(closure_directory,&st) && !S_ISDIR(st.st_mode)) (void)unlink(closure_directory);
+        (void)mkdir(closure_directory,0700); (void)chmod(closure_directory,0700);
+        if(*closure_marker) (void)unlink(closure_marker);
+    }
     if(stopped_service>0) { kill(stopped_service,SIGCONT); stopped_service=0; }
     if(raw_observer>=0) { close(raw_observer); raw_observer=-1; }
+    if(closure_workspace) { bt_workspace_free(closure_workspace); closure_workspace=NULL; }
     if(window_open) { bt_window_close(&window); window_open=false; }
     for(unsigned i=0;i<4;i++) if(clients[i].remote) bt_session_close(&clients[i]);
     for(unsigned i=0;i<owned_count;i++) {
         char ignored[256];
         (void)bt_remote_terminate(root,owned_names[i],ignored,sizeof(ignored));
     }
+    if(*closure_marker) (void)unlink(closure_marker);
+    if(*closure_directory) (void)rmdir(closure_directory);
     /* Only fixture files and empty directories directly below our mkdtemp
      * root are removed. A live/unknown session directory is left visible. */
     DIR *dir=*root?opendir(root):NULL;
@@ -474,6 +490,93 @@ static void terminate(const char *name) {
     require(access(endpoint,F_OK)<0 && errno==ENOENT,"termination removes its private endpoint");
 }
 static void report(const char *name) { printf("PASS persistence: %s\n",name); fflush(stdout); }
+
+static unsigned closure_request(const char *endpoint,uint64_t pane) {
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    require(strlen(endpoint)<sizeof(address.sun_path),"private closure control path fits");
+    strcpy(address.sun_path,endpoint);
+    int fd=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
+    require(fd>=0 && !connect(fd,(struct sockaddr *)&address,sizeof(address)),"connect closure control request");
+    unsigned char packet[16]={'B','T','C','1',7};
+    for(unsigned i=0;i<8;++i) packet[8+i]=(unsigned char)(pane>>(8*i));
+    require(send(fd,packet,sizeof(packet),MSG_NOSIGNAL)==sizeof(packet),"request generated pane closure");
+    unsigned char reply[512]; ssize_t used=-1;
+    uint64_t deadline=bt_millis()+3000;
+    while(bt_millis()<deadline) {
+        require(!bt_workspace_pump(closure_workspace,0),"pump closure control workspace");
+        used=recv(fd,reply,sizeof(reply)-1,MSG_DONTWAIT);
+        if(used>=0) break;
+        require(errno==EAGAIN || errno==EWOULDBLOCK || errno==EINTR,"read closure control response");
+        nap();
+    }
+    close(fd);
+    require(used>=8 && !memcmp(reply,"BTC1",4),"receive complete closure control response");
+    reply[used]=0;
+    if(reply[4]) require(strstr((char *)reply+8,"recovery directory")!=NULL,"control closure reports actionable storage failure");
+    return reply[4];
+}
+
+static void durable_closure(void) {
+    path(closure_directory,sizeof(closure_directory),root,"closure-state");
+    char child_progress_path[PATH_MAX]; path(child_progress_path,sizeof(child_progress_path),root,"closure.progress");
+    int fd=open(closure_directory,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+    require(fd>=0 && !close(fd),"prepare unavailable recovery-directory fixture");
+    const char *configured=getenv("BATTY_KILIX_RECOVERY_DIR");
+    char *previous=configured?strdup(configured):NULL;
+    require(!configured || previous,"retain recovery-directory environment");
+    require(!setenv("BATTY_KILIX_RECOVERY_DIR",closure_directory,1),"configure closure owner recovery storage");
+    create(closure_name,"normal",child_progress_path);
+    require(previous?!setenv("BATTY_KILIX_RECOVERY_DIR",previous,1):!unsetenv("BATTY_KILIX_RECOVERY_DIR"),
+            "restore recovery-directory environment for other owners");
+    free(previous);
+    Progress ready=await_progress(child_progress_path,0,'R');
+    require(!bt_remote_attach(&clients[1],root,closure_name,false),"attach deliberate-closure fixture");
+    uint64_t epoch=bt_remote_epoch(&clients[1]);
+    char leaf[40]; snprintf(leaf,sizeof(leaf),"closed-%016llx",(unsigned long long)epoch);
+    path(closure_marker,sizeof(closure_marker),closure_directory,leaf);
+    require(bt_remote_terminate(root,closure_name,error,sizeof(error))<0 && errno==ENOTDIR &&
+            strstr(error,"recovery directory"),"failed closure reports recovery storage and does not terminate");
+    require(!bt_session_send(&clients[1],"N",1),"retained owner accepts input after failed closure");
+    Progress alive=await_progress(child_progress_path,ready.step,'N');
+    require(alive.child==ready.child && !bt_session_pump(&clients[1],1) &&
+            !clients[1].exited && bt_remote_epoch(&clients[1])==epoch,
+            "failed closure preserves the same live owner and attachment");
+    detach(&clients[1]);
+    closure_workspace=bt_workspace_new("Durable closure",640,480,"monospace",16,error,sizeof(error));
+    require(closure_workspace!=NULL,"create generated-owner closure workspace");
+    BtPaneLaunch launch={.session_dir=root,.session_name=closure_name,.attach=true}; uint64_t pane=0;
+    require(!bt_workspace_add(closure_workspace,0,BT_RIGHT,&launch,&pane),"attach retained owner in generated pane");
+    char endpoint[PATH_MAX]; path(endpoint,sizeof(endpoint),root,"closure-control.sock");
+    require(!bt_workspace_listen_policy(closure_workspace,endpoint,false,helper,service,root,"closure-",false,environ),
+            "listen with generated-owner termination policy");
+    require(closure_request(endpoint,pane)!=0 && bt_workspace_active(closure_workspace)==pane &&
+            !bt_workspace_closed(closure_workspace),"failed control closure preserves pane identity and attachment");
+    require(!unlink(closure_directory) && !mkdir(closure_directory,0700),"repair configured recovery storage");
+    require(!symlink(child_progress_path,closure_marker),"prepare invalid existing closure marker");
+    require(bt_remote_terminate(root,closure_name,error,sizeof(error))<0 && errno==ELOOP,
+            "existing symlink does not authorize owner termination");
+    require(!unlink(closure_marker),"remove invalid closure marker");
+    fd=open(closure_marker,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+    require(fd>=0 && !close(fd) && !chmod(closure_marker,0644),"prepare nonprivate existing closure marker");
+    require(bt_remote_terminate(root,closure_name,error,sizeof(error))<0 && errno==EPERM,
+            "existing nonprivate marker does not authorize owner termination");
+    require(!chmod(closure_marker,0600) && !chmod(closure_directory,0755),"repair marker and expose directory policy failure");
+    require(bt_remote_terminate(root,closure_name,error,sizeof(error))<0 && errno==EPERM,
+            "unsafe recovery directory does not authorize owner termination");
+    require(!chmod(closure_directory,0700),"restore private recovery directory");
+    require(!closure_request(endpoint,pane) && bt_workspace_closed(closure_workspace),
+            "repaired storage allows deliberate termination and last-pane closure");
+    for(unsigned i=0;i<owned_count;++i) if(!strcmp(owned_names[i],closure_name)) {
+        owned_names[i]=owned_names[--owned_count]; break;
+    }
+    struct stat st;
+    require(!lstat(closure_marker,&st) && S_ISREG(st.st_mode) && st.st_uid==geteuid() && !(st.st_mode&077),
+            "successful retry retains a private regular closure marker");
+    bt_workspace_free(closure_workspace); closure_workspace=NULL;
+    require(!unlink(closure_marker) && !rmdir(closure_directory),"remove private closure storage fixture");
+    closure_marker[0]=closure_directory[0]=0;
+    report("durable deliberate closure, retained owner on storage failure and retry after repair");
+}
 
 static void recording_lifetime(void) {
     char logs[PATH_MAX],record_progress[PATH_MAX],gate[PATH_MAX];
@@ -1750,6 +1853,7 @@ int main(int argc,char **argv) {
     path(progress_path,sizeof(progress_path),root,"main.progress");
     recording_lifetime();
     startup_and_ownership();
+    durable_closure();
     nonblocking_frames();
     capture_publication();
     delta_codec();

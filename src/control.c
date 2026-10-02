@@ -407,10 +407,12 @@ static unsigned request(BtControl *c, ControlClient *client, unsigned char *pack
         if(lookup.view->session.remote && !bt_remote_observer(&lookup.view->session) &&
            lookup.session_dir && !strcmp(lookup.session_dir,c->root) && generated_name(c,lookup.session_name))
             snprintf(name,sizeof(name),"%s",lookup.session_name);
-        rc=bt_workspace_close(c->workspace,id);
-        if(!rc && name[0] && bt_remote_terminate(c->root,name,terminate_error,sizeof(terminate_error))) {
+        /* A failed durable closure must retain the pane and its attachment;
+         * otherwise the next autosave silently drops the still-live owner. */
+        if(name[0] && bt_remote_terminate(c->root,name,terminate_error,sizeof(terminate_error))) {
             error=terminate_error; goto rejected;
         }
+        rc=bt_workspace_close(c->workspace,id);
     }
     else if(op==8) rc=bt_workspace_zoom(c->workspace,id);
     else if(op==16 || op==22) {

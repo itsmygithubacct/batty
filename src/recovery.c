@@ -199,15 +199,30 @@ done:
     { int error=errno; free(data); bt_presentation_free(frame); close(fd); errno=error; }
     return rc;
 }
-void bt_recovery_forget(const char *directory, uint64_t epoch) {
-    if(!directory || !*directory) return;
+int bt_recovery_forget(const char *directory, uint64_t epoch) {
+    if(!directory || !*directory) return 0;
     int root=open(directory,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-    if(root<0) return;
-    struct stat info;
-    if(!fstat(root,&info) && info.st_uid==geteuid() && !(info.st_mode&077)) {
-        char name[40]; snprintf(name,sizeof(name),"closed-%016llx",(unsigned long long)epoch);
-        int fd=openat(root,name,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
-        if(fd>=0) { (void)fsync(fd); close(fd); (void)fsync(root); }
+    if(root<0) return -1;
+    struct stat info; int fd=-1,rc=-1; bool created=false;
+    char name[40]; snprintf(name,sizeof(name),"closed-%016llx",(unsigned long long)epoch);
+    if(fstat(root,&info)<0) goto done;
+    if(info.st_uid!=geteuid() || (info.st_mode&077)) { errno=EPERM; goto done; }
+    fd=openat(root,name,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
+    created=fd>=0;
+    if(fd<0 && errno==EEXIST)
+        fd=openat(root,name,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+    if(fd<0 || fstat(fd,&info)<0) goto done;
+    if(!S_ISREG(info.st_mode) || info.st_uid!=geteuid() || (info.st_mode&077)) {
+        errno=EPERM; goto done;
     }
-    close(root);
+    if(fsync(fd)<0 || fsync(root)<0) goto done;
+    rc=0;
+done:
+    { int error=errno;
+      /* A failed stop keeps its owner alive. Remove a marker created by this
+       * attempt so a later save does not mistake that owner for a closed one. */
+      if(rc && created) { (void)unlinkat(root,name,0); (void)fsync(root); }
+      if(fd>=0) close(fd);
+      close(root); errno=error; }
+    return rc;
 }
