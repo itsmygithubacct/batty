@@ -228,10 +228,15 @@ kilix_automatic_close_page() {
 kilix_recover_automatic() {
     [[ ${BATTY_KILIX_AUTO_RECOVER:-1} != 0 ]] || return 0
     local listing line name rest restored
+    # Automatic snapshots use this session root. Do not attach a controller
+    # to an owner already represented in the restored layout by observers.
+    local -A represented=()
+    for name in "$@"; do represented[$name]=1; done
     listing=$(batty list) || return
     while IFS= read -r line; do
         name=${line%% *}
         [[ $name =~ ^kilix-auto-[0-9a-f]{24}$ && $line == *' controllers=0 '* ]] || continue
+        [[ -z ${represented[$name]-} ]] || continue
         if batty workspace add "$workspace" -V restored --attach --session "$name"; then
             kilix_automatic_track "$restored" || return
             application_panes[$restored]=held
@@ -447,7 +452,7 @@ for page in {1..9}; do batty workspace bind "$workspace" Ctrl+Shift+B "$page" "p
 batty workspace bind "$workspace" Ctrl+Tab next-page
 batty workspace bind "$workspace" Ctrl+Shift+Tab previous-page
 if [[ -n $restore_file ]]; then
-    restore_map=() restore_group=0 restored=''
+    restore_map=() restore_sessions=() restore_group=0 restored=''
     declare -A recovered_names=() recovered_epochs=()
     for ((restore_i=0; restore_i<restore_records[9]; ++restore_i)); do
         restore_at=$((10+restore_i*5))
@@ -496,6 +501,7 @@ if [[ -n $restore_file ]]; then
         fi
         if ((restore_i % 4 == 0)); then restore_group=$restored; fi
         restore_map+=("${restore_records[restore_at]}" "$restored")
+        restore_sessions+=("${recovered_names[$restore_owner]-${restore_records[restore_at+2]}}")
         # Restored owners retain their diagnostic output even if already exited.
         application_panes[$restored]=held
     done
@@ -504,7 +510,7 @@ if [[ -n $restore_file ]]; then
     batty workspace layout-apply "$workspace" "${restore_records[8]}" "${restore_layout_options[@]}" "${restore_map[@]}"
     batty workspace window-size "$workspace" "$width" "$height"
     batty workspace active "$workspace" -V initial
-    if ((auto_restore)); then kilix_recover_automatic; fi
+    if ((auto_restore)); then kilix_recover_automatic "${restore_sessions[@]}"; fi
 elif [[ $session_mode == attach || $session_mode == observe ]]; then
     (($#==0)) || { printf '%s\n' 'Attach uses the existing session command.' >&2; exit 2; }
     attach_group='' attached=''

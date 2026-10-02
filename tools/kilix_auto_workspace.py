@@ -104,7 +104,10 @@ def select_snapshot(root, listing):
     available, orphaned = set(), set()
     for line in listing.splitlines():
         words = line.split()
-        if words and NAME.fullmatch(words[0]):
+        # A dead owner's socket can remain in the runtime directory. Its
+        # unavailable listing must not block selection of durable output;
+        # the restore path independently checks whether replacement is safe.
+        if words and NAME.fullmatch(words[0]) and 'unavailable' not in words:
             available.add(words[0])
             if 'controllers=0' in words:
                 orphaned.add(words[0])

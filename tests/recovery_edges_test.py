@@ -78,11 +78,11 @@ class Fixture:
                 os.close(descriptor)
         time.sleep(0.2)
 
-    def selected(self):
+    def selected(self, listing=''):
         previous = os.environ.get('BATTY_KILIX_RECOVERY_DIR')
         os.environ['BATTY_KILIX_RECOVERY_DIR'] = str(self.durable)
         try:
-            return select_snapshot(self.runtime, '')
+            return select_snapshot(self.runtime, listing)
         finally:
             if previous is None:
                 os.environ.pop('BATTY_KILIX_RECOVERY_DIR')
@@ -207,12 +207,94 @@ def partially_closed(fixture):
     assert not list(fixture.durable.glob('.batty-output-*/*.bt-output'))
 
 
-for scenario in ('controller-first', 'observer-first', 'observer-only', 'partially-closed'):
+def owner_crash(fixture):
+    original, endpoint = fixture.launch('--', '/bin/cat')
+    pane = request(endpoint, 'checkpoint')['panes'][0]
+    request(endpoint, 'rename', pane['id'], b'Owner crash page')
+    request(endpoint, 'pane-rename', pane['id'], b'Owner crash output')
+    request(endpoint, 'send', pane['id'], b'ARCHIVED_BEFORE_CRASH\n')
+    wait(lambda: 'ARCHIVED_BEFORE_CRASH' in request(endpoint, 'dump', pane['id']), original)
+    fixture.durable.mkdir(mode=0o700, parents=True)
+    saved = fixture.durable / ('.kilix-layout-' + 'b' * 24 + '.json')
+    save(saved, request(endpoint, 'checkpoint'))
+    fixture.stop(original)
+    fixture.crash_owner(pane['session'])
+    assert (fixture.runtime / (pane['session'] + '.sock')).exists(), 'Missing stale-socket fixture'
+    listing = subprocess.check_output([str(ROOT / 'batty'), '--list', '--session-dir', str(fixture.runtime)],
+                                      env=fixture.env, text=True, timeout=8)
+    assert pane['session'] + ' unavailable' in listing, listing
+    assert fixture.selected(listing) == saved, 'Unavailable owner blocked durable recovery'
+    recovered, endpoint = fixture.launch(automatic=True)
+    panes = request(endpoint, 'checkpoint')['panes']
+    assert len(panes) == 1 and panes[0]['title'] == 'Owner crash output'
+    restored = panes[0]
+    assert restored['page_title'] == 'Owner crash page' and not restored['observe']
+    assert restored['session_epoch'] != pane['session_epoch'] and restored['pid'] != pane['pid']
+    assert 'ARCHIVED_BEFORE_CRASH' in request(endpoint, 'dump', restored['id'])
+    request(endpoint, 'send', restored['id'], b"printf 'FRESH_%s\\n' OK\n")
+    wait(lambda: 'FRESH_OK' in request(endpoint, 'dump', restored['id']), recovered)
+
+
+def automatic_observer(fixture, reboot):
+    original, endpoint = fixture.launch('--', '/bin/cat')
+    owner = request(endpoint, 'checkpoint')['panes'][0]
+    request(endpoint, 'send', owner['id'], b'OBSERVED_BEFORE_RECOVERY\n')
+    wait(lambda: 'OBSERVED_BEFORE_RECOVERY' in request(endpoint, 'dump', owner['id']), original)
+    spectator, endpoint = fixture.launch('--observe', owner['session'])
+    observer = request(endpoint, 'checkpoint')['panes'][0]
+    request(endpoint, 'rename', observer['id'], b'Observer page')
+    request(endpoint, 'pane-rename', observer['id'], b'Saved observer')
+    fixture.durable.mkdir(mode=0o700, parents=True)
+    saved = fixture.durable / ('.kilix-layout-' + 'c' * 24 + '.json')
+    save(saved, request(endpoint, 'checkpoint'))
+    fixture.stop(original)
+    fixture.stop(spectator)
+    if reboot:
+        fixture.crash_owner(owner['session'])
+        shutil.rmtree(fixture.runtime)
+    else:
+        # An unrelated orphan must still be recovered after the saved layout.
+        unrelated, endpoint = fixture.launch('--', '/bin/cat')
+        extra = request(endpoint, 'checkpoint')['panes'][0]
+        fixture.stop(unrelated)
+    recovered, endpoint = fixture.launch(automatic=True)
+    panes = request(endpoint, 'checkpoint')['panes']
+    restored = [pane for pane in panes if pane['title'] == 'Saved observer']
+    assert len(restored) == 1 and restored[0]['observe'], panes
+    restored = restored[0]
+    assert restored['page_title'] == 'Observer page'
+    assert 'OBSERVED_BEFORE_RECOVERY' in request(endpoint, 'dump', restored['id'])
+    assert [pane['observe'] for pane in panes if pane['session'] == restored['session']] == [True], \
+        'Orphan recovery added a controller to an already restored observer'
+    try:
+        request(endpoint, 'send', restored['id'], b'NEVER_SEND\n')
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('Automatically recovered observer accepted input')
+    if reboot:
+        assert len(panes) == 1 and restored['session_epoch'] != owner['session_epoch']
+        controller, writable_endpoint = fixture.launch('--attach', restored['session'])
+        writable = request(writable_endpoint, 'checkpoint')['panes'][0]
+        request(writable_endpoint, 'send', writable['id'], b"printf 'FRESH_%s\\n' OK\n")
+        wait(lambda: 'FRESH_OK' in request(endpoint, 'dump', restored['id']), controller)
+    else:
+        assert len(panes) == 2 and restored['pid'] == owner['pid']
+        other = next(pane for pane in panes if pane['session'] == extra['session'])
+        assert other['pid'] == extra['pid'] and not other['observe']
+
+
+for scenario in ('controller-first', 'observer-first', 'observer-only', 'partially-closed',
+                 'owner-crash', 'automatic-observer-live', 'automatic-observer-reboot'):
     with tempfile.TemporaryDirectory(prefix='bt-recovery-edges-') as directory:
         fixture = Fixture(Path(directory))
         try:
             if scenario == 'partially-closed':
                 partially_closed(fixture)
+            elif scenario == 'owner-crash':
+                owner_crash(fixture)
+            elif scenario.startswith('automatic-observer-'):
+                automatic_observer(fixture, scenario.endswith('-reboot'))
             else:
                 shared_owner(fixture, scenario)
             print('PASS recovery edge: ' + scenario, flush=True)

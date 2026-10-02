@@ -1261,7 +1261,9 @@ New output archives preserve soft wraps for later reflow and retain the saved
 default foreground/background colors. Short output stays visible above the
 fresh prompt; static images keep their positions. Automatic recovery excludes
 explicitly closed owners and collapses their splits or empty pages while
-retaining the remaining panes and their output archives. Archives captured by
+retaining the remaining panes and their output archives. It handles stale
+socket files left by crashed owners and preserves observer-only layouts
+without adding controller panes. Archives captured by
 earlier versions remain readable, but their baked-in line breaks cannot be
 converted back into soft wraps.
 Local unnamed panes
